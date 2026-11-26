@@ -110,7 +110,7 @@ def user_message(root: Path, h: str) -> str:
     text = (root / arginf.ROOT_DIR / h / "Statement.lean").read_text(encoding="utf-8")
     lines = [ln for ln in text.splitlines() if not re.match(r"\s*(namespace|end)\b", ln)]
     lean = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-    return PROMPT.format(lean=lean)
+    return PROMPT.replace("{lean}", lean)  # not str.format: the example contains TeX braces
 
 
 def digest(text: str) -> str:

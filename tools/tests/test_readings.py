@@ -180,3 +180,13 @@ class LimitsTests(unittest.TestCase):
         self.assertFalse(readings.is_truncated(done))
         self.assertFalse(readings.is_truncated("no perf line"))
         self.assertIsNone(readings.generated_tokens("no perf line"))
+
+
+class PromptBracesTests(unittest.TestCase):
+    def test_tex_braces_in_the_prompt_are_literal(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "Theorems").mkdir()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        msg = readings.user_message(root, h)
+        self.assertIn("\\mathbb{R}", msg)
+        self.assertTrue(msg.endswith("def statement : Prop :=\n  True\n```"))
