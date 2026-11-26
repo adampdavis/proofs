@@ -37,7 +37,7 @@ jobs:
           MODEL: ${{ matrix.model }}
         run: |
           nproc; free -g | head -2
-          time python3 tools/readings.py generate --model "$MODEL" --out readings.json
+          time python3 -m tools.readings generate --model "$MODEL" --out readings.json
       - uses: actions/upload-artifact@v4
         with:
           name: readings-${{ matrix.model }}

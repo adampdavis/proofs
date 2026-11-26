@@ -5,7 +5,7 @@ A reading is the output of an allowlisted open-weights model (models.toml), run 
 llama.cpp build with deterministic decoding, on a fixed prompt containing the statement's Lean.
 There is no system prompt, memory or tool use, so anyone can rerun it and check the text:
 
-    python3 tools/readings.py generate --model <name> [<hash> ...]   # writes readings.json
+    python3 -m tools.readings generate --model <name> [<hash> ...]   # writes readings.json
 """
 
 from __future__ import annotations
