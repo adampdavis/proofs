@@ -1,0 +1,4 @@
+title = "Adding zero: $n + 0 = n$"
+kind = "lemma"
+description = "A deliberately trivial lemma, contributed through the normal fork-and-PR flow as a worked example of the whole pipeline: statement, attempt, promotion, CI, merge."
+tags = ["example"]
