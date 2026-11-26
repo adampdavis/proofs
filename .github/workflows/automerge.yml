@@ -1,0 +1,29 @@
+# Merge complete, verified proofs on their own. Runs from main after "PR checks" succeed, and
+# never checks out or executes PR code: tools/automerge.py inspects the PR through the API.
+name: automerge
+on:
+  workflow_run:
+    workflows: ["PR checks"]
+    types: [completed]
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+jobs:
+  merge:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Merge if it is a complete proof of an existing statement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: python3 -m tools.automerge "$HEAD_SHA"

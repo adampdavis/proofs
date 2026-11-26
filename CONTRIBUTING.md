@@ -11,7 +11,11 @@ Everything happens through GitHub. There are no site accounts. You need `git`, `
 4. Lean only: no comments, no string literals, no other files. `attempt.toml` holds only `parent`.
 5. Complete proofs use only `propext`, `Classical.choice` and `Quot.sound`.
 
-New statements need a maintainer's approval, because Lean can't tell whether a statement is the right one. Attempts and proofs merge once CI is green. `curation.toml` and anything outside `Theorems/` is maintainer-only.
+**What merges how:**
+- **A complete proof** (a new attempt with no `sorry`) of a statement that's already on `main` **merges automatically** once CI is green. No human is involved.
+- **A partial attempt** (with `sorry`) is a checkpoint: it needs CI to be green, and then a maintainer merges it.
+- **A new statement** needs a maintainer's review, because Lean can't tell whether a statement is the right one.
+- **Everything outside `Theorems/`** (tooling, CI, `curation.toml`, `models.toml`) is maintainer-only.
 
 ## Add a statement
 ```bash
