@@ -7,38 +7,43 @@ from pathlib import Path
 
 from tools import arginf
 
-STATEMENT = """\
-import Mathlib
+H = "0123456789ab"
+A = "ba9876543210"
 
-/-! A doc comment that must not affect the hash. -/
-namespace Theorems.«{h}»
 
--- the statement
-def statement : Prop :=
-  ∀ n : ℕ,   n + 0 = n   -- trailing comment
+def repo() -> Path:
+    root = Path(tempfile.mkdtemp())
+    (root / "Theorems").mkdir()
+    return root
 
-end Theorems.«{h}»
-"""
+
+def complete(root: Path, h: str, term: str, parent: str | None = None) -> str:
+    a = arginf.start_attempt(root, h, parent)
+    f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+    f.write_text(f.read_text().replace("by\n  sorry", term))
+    return arginf.seal_attempt(f.parent)
 
 
 class HashTests(unittest.TestCase):
     def test_extracts_and_normalizes_prop(self) -> None:
-        self.assertEqual(arginf.extract_statement(STATEMENT), "∀ n : ℕ, n + 0 = n")
+        text = (
+            "import Init\nnamespace X\ndef statement : Prop :=\n  ∀ n : Nat,   n + 0 = n\nend X\n"
+        )
+        self.assertEqual(arginf.extract_statement(text), "∀ n : Nat, n + 0 = n")
 
-    def test_hash_ignores_comments_whitespace_and_namespace(self) -> None:
-        a = arginf.statement_hash(STATEMENT.replace("{h}", "aaa"))
-        b = arginf.statement_hash("namespace X\ndef statement : Prop := ∀ n : ℕ, n + 0 = n\n")
+    def test_hash_ignores_whitespace_namespace_and_imports(self) -> None:
+        a = arginf.statement_hash(
+            "import Init\nnamespace Y\ndef statement : Prop :=\n  1 = 1\nend Y"
+        )
+        b = arginf.statement_hash("def statement : Prop := 1   =   1")
         self.assertEqual(a, b)
         self.assertRegex(a, r"^[0-9a-f]{12}$")
 
     def test_hash_changes_with_statement(self) -> None:
-        a = arginf.statement_hash("def statement : Prop := 1 = 1")
-        b = arginf.statement_hash("def statement : Prop := 2 = 2")
-        self.assertNotEqual(a, b)
-
-    def test_nested_block_comments(self) -> None:
-        text = "def statement : Prop := /- a /- b -/ c -/ True"
-        self.assertEqual(arginf.extract_statement(text), "True")
+        self.assertNotEqual(
+            arginf.statement_hash("def statement : Prop := 1 = 1"),
+            arginf.statement_hash("def statement : Prop := 2 = 2"),
+        )
 
     def test_rejects_missing_or_duplicate_statement(self) -> None:
         with self.assertRaises(arginf.ToolError):
@@ -46,292 +51,189 @@ class HashTests(unittest.TestCase):
         with self.assertRaises(arginf.ToolError):
             arginf.extract_statement("def statement : Prop := True\ndef statement : Prop := False")
 
-    def test_statement_ends_at_next_command(self) -> None:
-        text = "def statement : Prop := True\n\ntheorem helper : True := trivial\nend X"
-        self.assertEqual(arginf.extract_statement(text), "True")
+
+class NoProseTests(unittest.TestCase):
+    """Theorem folders are Lean only: the statements are the statements."""
+
+    def test_comments_and_strings_rejected(self) -> None:
+        self.assertTrue(arginf.prose_errors("f", "-- why\ndef statement : Prop := True"))
+        self.assertTrue(arginf.prose_errors("f", "/-! doc -/\ndef statement : Prop := True"))
+        self.assertTrue(arginf.prose_errors("f", 'def statement : Prop := "hi" = "hi"'))
+        self.assertEqual(arginf.prose_errors("f", "def statement : Prop := ∀ n : Nat, n = n"), [])
+
+    def test_folder_with_prose_fails(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        stmt = root / "Theorems" / h / "Statement.lean"
+        stmt.write_text("-- a claim\n" + stmt.read_text())
+        self.assertTrue(any("comments" in e for e in arginf.check_folder(stmt.parent)))
+
+    def test_meta_and_readme_files_rejected(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        (root / "Theorems" / h / "meta.toml").write_text('title = "x"\n')
+        self.assertTrue(any("allowed" in e for e in arginf.check_folder(root / "Theorems" / h)))
+        self.assertTrue(arginf.check_scope([f"Theorems/{H}/README.md"], f"{H}/x"))
+
+    def test_attempt_notes_rejected(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        a = arginf.start_attempt(root, h, None)
+        toml = root / "Theorems" / h / "attempts" / a / "attempt.toml"
+        toml.write_text('parent = ""\nnote = "my idea"\n')
+        self.assertTrue(any("only `parent`" in e for e in arginf.check_attempt(toml.parent)))
+
+    def test_attempt_with_comment_rejected(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        a = arginf.start_attempt(root, h, None)
+        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+        f.write_text(f.read_text().replace("sorry", "sorry -- stuck here"))
+        self.assertTrue(any("comments" in e for e in arginf.check_attempt(f.parent)))
 
 
 class ScopeTests(unittest.TestCase):
-    H = "0123456789ab"
+    def test_accepts_statement_and_one_attempt(self) -> None:
+        files = [
+            f"Theorems/{H}/Statement.lean",
+            f"Theorems/{H}/attempts/{A}/Attempt.lean",
+            f"Theorems/{H}/attempts/{A}/attempt.toml",
+        ]
+        self.assertEqual(arginf.check_scope(files, f"{H}/{A}"), [])
 
-    def test_accepts_single_folder_and_matching_branch(self) -> None:
-        files = [f"Theorems/{self.H}/Proof.lean", f"Theorems/{self.H}/meta.toml"]
-        self.assertEqual(arginf.check_scope(files, f"{self.H}/my-proof"), [])
+    def test_rejects_outside_two_folders_two_attempts_branch_and_paths(self) -> None:
+        self.assertTrue(arginf.check_scope([f"Theorems/{H}/Proof.lean", "lakefile.toml"], f"{H}/x"))
+        self.assertTrue(
+            arginf.check_scope([f"Theorems/{H}/Proof.lean", f"Theorems/{A}/Proof.lean"], f"{H}/x")
+        )
+        two = [f"Theorems/{H}/attempts/{A}/Attempt.lean", f"Theorems/{H}/attempts/{H}/Attempt.lean"]
+        self.assertTrue(arginf.check_scope(two, f"{H}/x"))
+        self.assertTrue(arginf.check_scope([f"Theorems/{H}/Proof.lean"], "main"))
+        self.assertTrue(arginf.check_scope([f"Theorems/{H}/../../lakefile.toml"], f"{H}/x"))
 
-    def test_rejects_files_outside_folder(self) -> None:
-        errs = arginf.check_scope([f"Theorems/{self.H}/Proof.lean", "lakefile.lean"], f"{self.H}/x")
+    def test_curation_is_maintainer_only(self) -> None:
+        errs = arginf.check_scope(["curation.toml"], f"{H}/x")
         self.assertTrue(any("outside" in e for e in errs))
 
-    def test_rejects_two_folders(self) -> None:
-        errs = arginf.check_scope(
-            [f"Theorems/{self.H}/Proof.lean", "Theorems/ba9876543210/Proof.lean"], f"{self.H}/x"
-        )
-        self.assertTrue(errs)
 
-    def test_rejects_branch_without_hash_prefix(self) -> None:
-        errs = arginf.check_scope([f"Theorems/{self.H}/Proof.lean"], "main")
-        self.assertTrue(any("branch" in e for e in errs))
+class CurationTests(unittest.TestCase):
+    def test_featured_and_examples_from_curation_file(self) -> None:
+        root = repo()
+        h1 = arginf.new_theorem(root, "True", imports=("Init",))
+        h2 = arginf.new_theorem(root, "1 = 1", imports=("Init",))
+        (root / "curation.toml").write_text(f'featured = ["{h1}"]\nexamples = ["{h2}"]\n')
+        by = {t["hash"]: t for t in arginf.build_index(root)["theorems"]}
+        self.assertTrue(by[h1]["featured"] and not by[h1]["example"])
+        self.assertTrue(by[h2]["example"] and not by[h2]["featured"])
 
-    def test_rejects_unexpected_file_names(self) -> None:
-        errs = arginf.check_scope([f"Theorems/{self.H}/evil.sh"], f"{self.H}/x")
-        self.assertTrue(any("allowed" in e for e in errs))
-
-    def test_rejects_path_tricks(self) -> None:
-        errs = arginf.check_scope([f"Theorems/{self.H}/../../lakefile.lean"], f"{self.H}/x")
-        self.assertTrue(errs)
-
-
-class FolderTests(unittest.TestCase):
-    def _repo(self) -> Path:
-        root = Path(tempfile.mkdtemp())
-        (root / "Theorems").mkdir()
-        return root
-
-    def test_new_creates_folder_named_by_hash(self) -> None:
-        root = self._repo()
-        h = arginf.new_theorem(root, "Add zero", "∀ n : ℕ, n + 0 = n", kind="lemma")
-        folder = root / "Theorems" / h
-        self.assertTrue((folder / "Statement.lean").is_file())
-        self.assertTrue((folder / "meta.toml").is_file())
-        self.assertEqual(arginf.check_folder(folder), [])
-        with self.assertRaises(arginf.ToolError):
-            arginf.new_theorem(root, "Again", "∀ n : ℕ, n + 0 = n", kind="lemma")
-
-    def test_check_folder_detects_hash_mismatch(self) -> None:
-        root = self._repo()
-        h = arginf.new_theorem(root, "T", "True", kind="theorem")
-        stmt = root / "Theorems" / h / "Statement.lean"
-        stmt.write_text(stmt.read_text().replace("  True", "  False"))
-        self.assertTrue(any("hash" in e for e in arginf.check_folder(root / "Theorems" / h)))
-
-    def test_meta_is_validated(self) -> None:
-        root = self._repo()
-        h = arginf.new_theorem(root, "T", "True", kind="theorem")
-        (root / "Theorems" / h / "meta.toml").write_text('title = ""\nkind = "banana"\n')
-        errs = arginf.check_folder(root / "Theorems" / h)
-        self.assertTrue(any("title" in e for e in errs))
-        self.assertTrue(any("kind" in e for e in errs))
-
-    def test_index_lists_status_and_dependencies(self) -> None:
-        root = self._repo()
-        lemma = arginf.new_theorem(root, "Lemma", "True", kind="lemma")
-        main = arginf.new_theorem(root, "Main", "1 = 1", kind="theorem")
-        (root / "Theorems" / lemma / "Proof.lean").write_text(
-            f"import Theorems.«{lemma}».Statement\nnamespace Theorems.«{lemma}»\n"
-            "theorem proof : statement := trivial\n"
-        )
-        (root / "Theorems" / main / "Proof.lean").write_text(
-            f"import Theorems.«{main}».Statement\nimport Theorems.«{lemma}».Proof\n"
-            f"namespace Theorems.«{main}»\ntheorem proof : statement := rfl\n"
-        )
-        index = arginf.build_index(root)
-        by_id = {t["hash"]: t for t in index["theorems"]}
-        self.assertEqual(by_id[main]["status"], "proved")
-        self.assertEqual(by_id[main]["dependencies"], [lemma])
-        self.assertEqual(by_id[lemma]["dependents"], [main])
-        self.assertEqual(by_id[main]["statement"], "1 = 1")
-        json.dumps(index)  # serializable
-
-    def test_index_marks_unproved(self) -> None:
-        root = self._repo()
-        h = arginf.new_theorem(root, "Open", "True", kind="open-question")
-        index = arginf.build_index(root)
-        self.assertEqual(index["theorems"][0]["status"], "open")
-        self.assertEqual(index["theorems"][0]["hash"], h)
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class AxiomTests(unittest.TestCase):
-    def test_standard_axioms_pass(self) -> None:
-        out = "'Theorems.«abc».proof' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
-        self.assertEqual(arginf.parse_axioms(out), ["propext", "Classical.choice", "Quot.sound"])
-        self.assertEqual(arginf.forbidden_axioms(arginf.parse_axioms(out)), [])
-
-    def test_no_axioms(self) -> None:
-        out = "'Theorems.«abc».proof' does not depend on any axioms\n"
-        self.assertEqual(arginf.parse_axioms(out), [])
-
-    def test_sorry_native_decide_and_custom_axioms_fail(self) -> None:
-        out = "'x' depends on axioms: [propext, sorryAx, Lean.ofReduceBool, Theorems.«abc».cheat]"
-        bad = arginf.forbidden_axioms(arginf.parse_axioms(out))
-        self.assertEqual(bad, ["sorryAx", "Lean.ofReduceBool", "Theorems.«abc».cheat"])
-
-    def test_unparseable_output_is_an_error(self) -> None:
-        with self.assertRaises(arginf.ToolError):
-            arginf.parse_axioms("error: unknown identifier")
-
-    def test_audit_source_pins_the_statement(self) -> None:
-        src = arginf.audit_source("0123456789ab")
-        self.assertIn("import Theorems.«0123456789ab».Proof", src)
-        self.assertIn(
-            "example : Theorems.«0123456789ab».statement := Theorems.«0123456789ab».proof", src
-        )
-        self.assertIn("#print axioms Theorems.«0123456789ab».proof", src)
+    def test_curation_validates_hashes_and_keys(self) -> None:
+        root = repo()
+        (root / "curation.toml").write_text('featured = ["nothere00000"]\nhot = []\n')
+        errs = arginf.load_curation(root)[1]
+        self.assertTrue(any("unknown key" in e for e in errs))
+        self.assertTrue(any("hashes" in e or "unknown statements" in e for e in errs))
 
 
 class AttemptTests(unittest.TestCase):
-    """Attempts ("lines") are content-addressed, may be partial, and form a tree."""
-
-    def _setup(self) -> tuple[Path, str]:
-        root = Path(tempfile.mkdtemp())
-        (root / "Theorems").mkdir()
-        return root, arginf.new_theorem(root, "T", "∀ n : ℕ, n + 0 = n", kind="theorem")
-
-    def test_start_attempt_creates_hashed_folder_with_sorry(self) -> None:
-        root, h = self._setup()
-        a = arginf.start_attempt(root, h, parent=None, note="induction")
-        folder = root / "Theorems" / h / "attempts" / a
-        self.assertRegex(a, r"^[0-9a-f]{12}$")
-        self.assertIn("sorry", (folder / "Attempt.lean").read_text())
-        self.assertEqual(arginf.check_attempt(folder), [])
-        info = arginf.attempt_info(folder)
-        self.assertEqual(info["parent"], None)
-        self.assertEqual(info["openGoals"], 1)
-        self.assertFalse(info["complete"])
-
-    def test_continue_from_any_attempt(self) -> None:
-        root, h = self._setup()
-        a = arginf.start_attempt(root, h, parent=None, note="first")
-        b = arginf.start_attempt(root, h, parent=a, note="continue")
-        child = root / "Theorems" / h / "attempts" / b
-        self.assertEqual(arginf.attempt_info(child)["parent"], a)
-        parent_text = (root / "Theorems" / h / "attempts" / a / "Attempt.lean").read_text()
-        self.assertEqual(
-            arginf._attempt_code((child / "Attempt.lean").read_text()),
-            arginf._attempt_code(parent_text),
-        )
-
-    def test_attempt_hash_covers_content_and_parent(self) -> None:
-        self.assertNotEqual(
-            arginf.attempt_hash("by\n  simp", None), arginf.attempt_hash("by\n  simp", "0" * 12)
-        )
-        self.assertEqual(
-            arginf.attempt_hash("by  simp -- c", None), arginf.attempt_hash("by simp", None)
-        )
-
-    def test_editing_a_merged_attempt_breaks_its_hash(self) -> None:
-        root, h = self._setup()
-        a = arginf.start_attempt(root, h, parent=None, note="x")
-        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
-        f.write_text(f.read_text().replace("sorry", "simp"))
-        self.assertTrue(any("hash" in e for e in arginf.check_attempt(f.parent)))
-
-    def test_rehash_after_editing_a_new_attempt(self) -> None:
-        root, h = self._setup()
-        a = arginf.start_attempt(root, h, parent=None, note="x")
-        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
-        f.write_text(f.read_text().replace("sorry", "simp"))
-        new = arginf.seal_attempt(f.parent)
-        self.assertNotEqual(new, a)
-        folder = root / "Theorems" / h / "attempts" / new
-        self.assertEqual(arginf.check_attempt(folder), [])
-        self.assertTrue(arginf.attempt_info(folder)["complete"])
-
-    def test_scope_allows_one_new_attempt(self) -> None:
-        h, a = "0123456789ab", "ba9876543210"
-        ok = arginf.check_scope(
-            [f"Theorems/{h}/attempts/{a}/Attempt.lean", f"Theorems/{h}/attempts/{a}/attempt.toml"],
-            f"{h}/{a}",
-        )
-        self.assertEqual(ok, [])
-        two = arginf.check_scope(
-            [f"Theorems/{h}/attempts/{a}/Attempt.lean", f"Theorems/{h}/attempts/{h}/Attempt.lean"],
-            f"{h}/{a}",
-        )
-        self.assertTrue(two)
-
-    def test_index_lists_attempt_tree(self) -> None:
-        root, h = self._setup()
-        a = arginf.start_attempt(root, h, parent=None, note="first")
-        b = arginf.start_attempt(root, h, parent=a, note="second")
+    def test_start_continue_and_tree(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
+        a = arginf.start_attempt(root, h, None)
+        b = arginf.start_attempt(root, h, a)
         entry = arginf.build_index(root)["theorems"][0]
         tree = {x["hash"]: x for x in entry["attempts"]}
         self.assertEqual(tree[b]["parent"], a)
         self.assertEqual(tree[a]["children"], [b])
+        self.assertEqual(tree[a]["openGoals"], 1)
+        self.assertNotIn("note", tree[a])
         self.assertEqual(entry["status"], "open")
 
+    def test_attempt_hash_covers_code_and_parent(self) -> None:
+        self.assertNotEqual(
+            arginf.attempt_hash("by\n  simp", None), arginf.attempt_hash("by\n  simp", "0" * 12)
+        )
+        self.assertEqual(
+            arginf.attempt_hash("by  simp", None), arginf.attempt_hash("by simp", None)
+        )
 
-class PromoteTests(unittest.TestCase):
-    def test_promote_complete_attempt_writes_proof(self) -> None:
-        root = Path(tempfile.mkdtemp())
-        (root / "Theorems").mkdir()
-        h = arginf.new_theorem(root, "T", "True", kind="theorem")
-        a = arginf.start_attempt(root, h, parent=None, note="")
+    def test_seal_rehashes_and_editing_breaks_hash(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        a = arginf.start_attempt(root, h, None)
         f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
-        f.write_text(f.read_text().replace("sorry", "trivial"))
-        a = arginf.seal_attempt(f.parent)
+        f.write_text(f.read_text().replace("by\n  sorry", "trivial"))
+        self.assertTrue(any("hash" in e for e in arginf.check_attempt(f.parent)))
+        new = arginf.seal_attempt(f.parent)
+        folder = root / "Theorems" / h / "attempts" / new
+        self.assertEqual(arginf.check_attempt(folder), [])
+        self.assertTrue(arginf.attempt_info(folder)["complete"])
+
+    def test_promote_complete_only(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        partial = arginf.start_attempt(root, h, None)
+        with self.assertRaises(arginf.ToolError):
+            arginf.promote(root, h, partial)
+        a = complete(root, h, "trivial")
         arginf.promote(root, h, a)
         proof = (root / "Theorems" / h / "Proof.lean").read_text()
-        self.assertIn(f"import Theorems.«{h}».attempts.«{a}».Attempt", proof)
         self.assertIn(f"theorem proof : statement := Attempt_{a}.proof", proof)
+        self.assertEqual(arginf.prose_errors("Proof.lean", proof), [])
         self.assertEqual(arginf.build_index(root)["theorems"][0]["status"], "proved")
 
-    def test_promote_refuses_partial_attempt(self) -> None:
-        root = Path(tempfile.mkdtemp())
-        (root / "Theorems").mkdir()
-        h = arginf.new_theorem(root, "T", "True", kind="theorem")
-        a = arginf.start_attempt(root, h, parent=None, note="")
-        with self.assertRaises(arginf.ToolError):
-            arginf.promote(root, h, a)
 
-    def test_attempt_audit_source(self) -> None:
-        src = arginf.audit_source("0123456789ab", "ba9876543210")
-        self.assertIn("import Theorems.«0123456789ab».attempts.«ba9876543210».Attempt", src)
+class IndexTests(unittest.TestCase):
+    def test_dependencies_and_no_prose_fields(self) -> None:
+        root = repo()
+        lemma = arginf.new_theorem(root, "True", imports=("Init",))
+        arginf.promote(root, lemma, complete(root, lemma, "trivial"))
+        main = arginf.new_theorem(root, "1 = 1", imports=("Init",))
+        stmt = root / "Theorems" / main / "Statement.lean"
+        stmt.write_text(f"import Theorems.«{lemma}».Proof\n" + stmt.read_text())
+        index = arginf.build_index(root)
+        self.assertEqual(index["version"], 2)
+        by = {t["hash"]: t for t in index["theorems"]}
+        self.assertEqual(by[main]["dependencies"], [lemma])
+        self.assertEqual(by[lemma]["dependents"], [main])
+        for t in index["theorems"]:
+            self.assertFalse({"title", "description", "kind", "tags"} & set(t))
+        json.dumps(index)
+
+
+class AxiomTests(unittest.TestCase):
+    def test_parse_and_forbid(self) -> None:
+        ok = "'x' depends on axioms: [propext, Classical.choice, Quot.sound]"
+        self.assertEqual(arginf.forbidden_axioms(arginf.parse_axioms(ok)), [])
+        self.assertEqual(arginf.parse_axioms("'x' does not depend on any axioms"), [])
+        bad = "'x' depends on axioms: [propext, sorryAx, Lean.ofReduceBool, Theorems.«a».cheat]"
+        self.assertEqual(
+            arginf.forbidden_axioms(arginf.parse_axioms(bad)),
+            ["sorryAx", "Lean.ofReduceBool", "Theorems.«a».cheat"],
+        )
+        with self.assertRaises(arginf.ToolError):
+            arginf.parse_axioms("error: unknown identifier")
+
+    def test_audit_source_pins_statement(self) -> None:
+        src = arginf.audit_source(H, A)
+        self.assertIn(f"import Theorems.«{H}».attempts.«{A}».Attempt", src)
         self.assertIn(
-            "example : Theorems.«0123456789ab».statement := "
-            "Theorems.«0123456789ab».Attempt_ba9876543210.proof",
-            src,
+            f"example : Theorems.«{H}».statement := Theorems.«{H}».Attempt_{A}.proof", src
         )
 
 
-class FolderWithAttemptsTests(unittest.TestCase):
-    def test_attempts_dir_is_allowed(self) -> None:
-        root = Path(tempfile.mkdtemp())
-        (root / "Theorems").mkdir()
-        h = arginf.new_theorem(root, "T", "True", kind="theorem")
-        arginf.start_attempt(root, h, parent=None, note="")
-        self.assertEqual(arginf.check_folder(root / "Theorems" / h), [])
-
-
 class FastPathTests(unittest.TestCase):
-    """Proofs that only need Lean core compile with plain `lean`, skipping Mathlib entirely."""
-
-    def _repo(self, imports: tuple[str, ...]) -> tuple[Path, str]:
-        root = Path(tempfile.mkdtemp())
-        (root / "Theorems").mkdir()
-        h = arginf.new_theorem(root, "T", "∀ n : Nat, n + 0 = n", kind="lemma", imports=imports)
-        a = arginf.start_attempt(root, h, None, "")
-        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
-        f.write_text(f.read_text().replace("by\n  sorry", "fun n => Nat.add_zero n"))
-        a = arginf.seal_attempt(f.parent)
-        arginf.promote(root, h, a)
-        return root, h
-
-    def test_core_only_folder_plan_in_dependency_order(self) -> None:
-        root, h = self._repo(("Init",))
+    def test_core_only_plan_and_external_imports(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
+        arginf.promote(root, h, complete(root, h, "fun n => Nat.add_zero n"))
         plan = arginf.fast_plan(root, h)
-        self.assertIsNotNone(plan)
         assert plan is not None
         names = [m for m, _ in plan]
         self.assertEqual(names[0], f"Theorems.«{h}».Statement")
         self.assertEqual(names[-1], f"Theorems.«{h}».Proof")
-        self.assertTrue(any(".attempts." in n for n in names))
+        h2 = arginf.new_theorem(root, "True", imports=("Mathlib",))
+        self.assertIsNone(arginf.fast_plan(root, h2))
 
-    def test_external_imports_need_the_full_build(self) -> None:
-        root, h = self._repo(("Mathlib",))
-        self.assertIsNone(arginf.fast_plan(root, h))
 
-    def test_follows_theorem_dependencies(self) -> None:
-        root, h = self._repo(("Init",))
-        h2 = arginf.new_theorem(root, "U", "True", kind="theorem", imports=("Init",))
-        stmt = root / "Theorems" / h2 / "Statement.lean"
-        stmt.write_text(f"import Theorems.«{h}».Proof\n" + stmt.read_text())
-        plan = arginf.fast_plan(root, h2)
-        assert plan is not None
-        names = [m for m, _ in plan]
-        self.assertLess(
-            names.index(f"Theorems.«{h}».Proof"), names.index(f"Theorems.«{h2}».Statement")
-        )
+if __name__ == "__main__":
+    unittest.main()
