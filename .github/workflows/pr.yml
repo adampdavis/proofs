@@ -1,0 +1,63 @@
+# Checks pull requests to this repository only (GitHub Actions terms: CI for this project,
+# not a general compute service). Untrusted code from forks runs with a read-only token and
+# no secrets, and only after the scope check passes.
+name: PR checks
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      hash: ${{ steps.scope.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tool tests
+        run: python3 -m unittest discover -s tools/tests -t .
+      - id: scope
+        name: One folder, matching hash and branch
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          AUTHOR: ${{ github.event.pull_request.author_association }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          # Maintainers change tooling on infra/* branches in this repo; everyone else is scoped.
+          if [[ "$HEAD_REF" == infra/* && "$SAME_REPO" == "true" && ( "$AUTHOR" == "OWNER" || "$AUTHOR" == "MEMBER" ) ]]; then
+            echo "maintainer infra change: scope check skipped"; echo "hash=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          python3 tools/arginf.py check --base "$BASE_SHA" --branch "$HEAD_REF"
+          echo "hash=${HEAD_REF%%/*}" >> "$GITHUB_OUTPUT"
+  lean:
+    needs: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: true
+          build: true
+          test: false
+          lint: false
+      - name: Proof matches statement, allowed axioms only
+        env:
+          HASH: ${{ needs.scope.outputs.hash }}
+        run: |
+          if [ -z "$HASH" ]; then python3 tools/arginf.py audit
+          elif [ -f "Theorems/$HASH/Proof.lean" ]; then python3 tools/arginf.py audit "$HASH"
+          else echo "statement only: build passed"; fi
