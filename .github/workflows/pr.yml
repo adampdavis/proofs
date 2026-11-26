@@ -32,11 +32,15 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          AUTHOR: ${{ github.event.pull_request.author_association }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          # Maintainers change tooling on infra/* branches in this repo; everyone else is scoped.
-          if [[ "$HEAD_REF" == infra/* && "$SAME_REPO" == "true" && ( "$AUTHOR" == "OWNER" || "$AUTHOR" == "MEMBER" ) ]]; then
+          # Maintainers (write access or more) change tooling on infra/* branches in this repo;
+          # everyone else is scoped. Org membership can be private, so ask the API.
+          PERM=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission 2>/dev/null || echo none)
+          if [[ "$HEAD_REF" == infra/* && "$SAME_REPO" == "true" && ( "$PERM" == "admin" || "$PERM" == "maintain" || "$PERM" == "write" ) ]]; then
             echo "maintainer infra change: scope check skipped"; echo "hash=" >> "$GITHUB_OUTPUT"; exit 0
           fi
           python3 tools/arginf.py check --base "$BASE_SHA" --branch "$HEAD_REF"
