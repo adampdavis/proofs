@@ -30,8 +30,9 @@ from tools import arginf
 PROMPT = (
     "Translate the following Lean statement into the language of a mathematics research paper. "
     "Reply with only the translation of what the statement says: no preamble, and do not "
-    "describe the imports, the definition or the Lean syntax. Use standard mathematical "
-    "notation, in LaTeX between $ signs.\n```\n{lean}\n```"
+    "describe the imports, the definition or the Lean syntax. Write it the way theorem "
+    "statements appear in papers, as prose with inline notation in LaTeX between $ signs, "
+    "for example: For every $x \\in \\mathbb{R}$, we have $x^2 \\ge 0$.\n```\n{lean}\n```"
 )
 TEMPLATES = ("chatml", "qwen3-nothink")
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
@@ -204,6 +205,7 @@ def is_truncated(stderr: str) -> bool:
 
 
 def clean_output(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     for marker in ("<|im_end|>", "[end of text]", "> EOF by user"):
         text = text.split(marker, 1)[0]
     return text.strip()
