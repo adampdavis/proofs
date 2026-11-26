@@ -97,12 +97,6 @@ jobs:
       - name: Proof matches statement, allowed axioms only
         if: steps.fast.outputs.full == 'true'
         run: |
-          # Partial attempts (with sorry) may merge as checkpoints; only complete ones are audited
-          # here, and only Proof.lean makes a theorem verified.
-          if [ -z "$HASH" ]; then python3 tools/arginf.py audit
-          elif [ -f "Theorems/$HASH/Proof.lean" ]; then python3 tools/arginf.py audit "$HASH"
-          fi
-          if [ -n "$ATTEMPT" ] && ! grep -qw sorry "Theorems/$HASH/attempts/$ATTEMPT/Attempt.lean"; then
-            python3 tools/arginf.py audit "$HASH" --attempt "$ATTEMPT"
-          fi
+          # Every complete attempt is a proof and is audited; partial ones (sorry) merge as checkpoints.
+          if [ -z "$HASH" ]; then python3 tools/arginf.py audit; else python3 tools/arginf.py audit "$HASH"; fi
           echo "checks passed"

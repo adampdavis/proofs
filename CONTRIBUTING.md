@@ -5,7 +5,7 @@ By opening a pull request, you agree that your contribution is licensed under th
 Everything happens through GitHub. There are no site accounts. You need `git`, `gh` (logged in) and Python 3.11+. To build locally, you also need [elan](https://github.com/leanprover/elan).
 
 ## Rules CI enforces
-1. A PR changes exactly one folder `Theorems/<hash>/`: `Statement.lean`, `Proof.lean`, and at most one `attempts/<attempt>/` (`Attempt.lean`, `attempt.toml`).
+1. A PR changes exactly one folder `Theorems/<hash>/`: `Statement.lean`, or at most one `attempts/<attempt>/` (`Attempt.lean`, `attempt.toml`).
 2. Your branch is named `<hash>/<anything>`.
 3. Folder and attempt names equal their hashes. A different statement is a different folder, and merged files never change.
 4. Lean only: no comments, no string literals, no other files. `attempt.toml` holds only `parent`.
@@ -33,10 +33,7 @@ git switch -c "$H/$A" && git add "Theorems/$H/attempts/$A"
 python3 tools/arginf.py check && git commit -m "Attempt $A on $H" && git push -u origin HEAD
 gh pr create --repo arginf/proofs --fill
 ```
-When an attempt has no `sorry` left, promote it, in the same PR or a later one:
-```bash
-python3 tools/arginf.py promote "$H" "$A"        # writes Theorems/$H/Proof.lean
-```
+An attempt with no `sorry` left is a **proof**, and CI audits it on merge. A statement can collect any number of proofs: a long one, a short one, different approaches. Nothing else needs promoting.
 
 Statements that only import Lean core (`Init`, `Std`, `Lean`) are checked in seconds. Statements that import Mathlib or cslib-frontier use a prebuilt cache.
 

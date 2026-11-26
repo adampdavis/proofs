@@ -102,13 +102,19 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(arginf.check_scope(files, f"{H}/{A}"), [])
 
     def test_rejects_outside_two_folders_two_attempts_branch_and_paths(self) -> None:
-        self.assertTrue(arginf.check_scope([f"Theorems/{H}/Proof.lean", "lakefile.toml"], f"{H}/x"))
         self.assertTrue(
-            arginf.check_scope([f"Theorems/{H}/Proof.lean", f"Theorems/{A}/Proof.lean"], f"{H}/x")
+            arginf.check_scope([f"Theorems/{H}/Statement.lean", "lakefile.toml"], f"{H}/x")
+        )
+        self.assertTrue(
+            arginf.check_scope(
+                [f"Theorems/{H}/Statement.lean", f"Theorems/{A}/Statement.lean"], f"{H}/x"
+            )
         )
         two = [f"Theorems/{H}/attempts/{A}/Attempt.lean", f"Theorems/{H}/attempts/{H}/Attempt.lean"]
         self.assertTrue(arginf.check_scope(two, f"{H}/x"))
-        self.assertTrue(arginf.check_scope([f"Theorems/{H}/Proof.lean"], "main"))
+        self.assertTrue(arginf.check_scope([f"Theorems/{H}/Statement.lean"], "main"))
+        # Proof.lean no longer exists: every complete attempt is a proof.
+        self.assertTrue(arginf.check_scope([f"Theorems/{H}/Proof.lean"], f"{H}/x"))
         self.assertTrue(arginf.check_scope([f"Theorems/{H}/../../lakefile.toml"], f"{H}/x"))
 
     def test_curation_is_maintainer_only(self) -> None:
@@ -168,28 +174,28 @@ class AttemptTests(unittest.TestCase):
         self.assertEqual(arginf.check_attempt(folder), [])
         self.assertTrue(arginf.attempt_info(folder)["complete"])
 
-    def test_promote_complete_only(self) -> None:
+    def test_every_complete_attempt_is_a_proof(self) -> None:
         root = repo()
         h = arginf.new_theorem(root, "True", imports=("Init",))
-        partial = arginf.start_attempt(root, h, None)
-        with self.assertRaises(arginf.ToolError):
-            arginf.promote(root, h, partial)
-        a = complete(root, h, "trivial")
-        arginf.promote(root, h, a)
-        proof = (root / "Theorems" / h / "Proof.lean").read_text()
-        self.assertIn(f"theorem proof : statement := Attempt_{a}.proof", proof)
-        self.assertEqual(arginf.prose_errors("Proof.lean", proof), [])
-        self.assertEqual(arginf.build_index(root)["theorems"][0]["status"], "proved")
+        arginf.start_attempt(root, h, None)  # partial: sorry
+        self.assertEqual(arginf.build_index(root)["theorems"][0]["status"], "open")
+        long_a = complete(root, h, "by\n  exact trivial")
+        short_a = complete(root, h, "trivial")
+        t = arginf.build_index(root)["theorems"][0]
+        self.assertEqual(t["status"], "proved")
+        self.assertEqual(sorted(t["proofs"]), sorted([long_a, short_a]))
+        sizes = {x["hash"]: x["size"] for x in t["attempts"]}
+        self.assertLess(sizes[short_a], sizes[long_a])
 
 
 class IndexTests(unittest.TestCase):
     def test_dependencies_and_no_prose_fields(self) -> None:
         root = repo()
         lemma = arginf.new_theorem(root, "True", imports=("Init",))
-        arginf.promote(root, lemma, complete(root, lemma, "trivial"))
+        la = complete(root, lemma, "trivial")
         main = arginf.new_theorem(root, "1 = 1", imports=("Init",))
         stmt = root / "Theorems" / main / "Statement.lean"
-        stmt.write_text(f"import Theorems.«{lemma}».Proof\n" + stmt.read_text())
+        stmt.write_text(f"import Theorems.«{lemma}».attempts.«{la}».Attempt\n" + stmt.read_text())
         index = arginf.build_index(root)
         self.assertEqual(index["version"], 2)
         by = {t["hash"]: t for t in index["theorems"]}
@@ -225,15 +231,27 @@ class FastPathTests(unittest.TestCase):
     def test_core_only_plan_and_external_imports(self) -> None:
         root = repo()
         h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
-        arginf.promote(root, h, complete(root, h, "fun n => Nat.add_zero n"))
+        a = complete(root, h, "fun n => Nat.add_zero n")
         plan = arginf.fast_plan(root, h)
         assert plan is not None
         names = [m for m, _ in plan]
         self.assertEqual(names[0], f"Theorems.«{h}».Statement")
-        self.assertEqual(names[-1], f"Theorems.«{h}».Proof")
+        self.assertEqual(names[-1], f"Theorems.«{h}».attempts.«{a}».Attempt")
         h2 = arginf.new_theorem(root, "True", imports=("Mathlib",))
         self.assertIsNone(arginf.fast_plan(root, h2))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IndexFilesTests(unittest.TestCase):
+    def test_each_attempt_carries_its_own_lean(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        a = complete(root, h, "trivial")
+        t = arginf.build_index(root)["theorems"][0]
+        self.assertNotIn("proofLean", t)
+        att = {x["hash"]: x for x in t["attempts"]}[a]
+        self.assertIn("trivial", att["lean"])
+        self.assertTrue(att["complete"])

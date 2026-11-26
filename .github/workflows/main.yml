@@ -80,6 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0  # provenance reads when each attempt was first added
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -99,6 +100,7 @@ jobs:
           # A failed readings job never blocks publishing: keep the previous readings instead.
           [ -f out/readings.json ] || curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o out/readings.json || echo "[]" > out/readings.json
           python3 -m tools.readings embed out/index.json out/readings.json
+          python3 -m tools.provenance embed out/index.json
           python3 -c "import json; json.load(open('out/index.json')); json.load(open('out/readings.json'))"
           git init -q -b index site && cp out/index.json out/readings.json site/ && cd site
           git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
