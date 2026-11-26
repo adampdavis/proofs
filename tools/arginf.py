@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -438,6 +439,100 @@ def audit(root: Path, h: str, attempt: str | None = None) -> list[str]:
     return [f"{h}: forbidden axioms {bad}"] if bad else []
 
 
+# Fast path: folders that only need Lean core compile in seconds with plain `lean` --
+
+CORE_ROOTS = frozenset({"Init", "Std", "Lean"})
+_ANY_IMPORT_RE = re.compile(r"(?m)^import\s+(\S+)\s*$")
+
+
+def _module_file(root: Path, module: str) -> Path:
+    parts = [p.strip("«»") for p in re.findall(r"«[^»]*»|[^.]+", module)]
+    return root.joinpath(*parts).with_suffix(".lean")
+
+
+def fast_plan(root: Path, h: str) -> list[tuple[str, Path]] | None:
+    """Modules to compile, dependencies first, or None if anything needs Mathlib/CSLib."""
+    targets = [f"{ROOT_DIR}.«{h}».Statement"]
+    if (root / ROOT_DIR / h / "Proof.lean").is_file():
+        targets.append(f"{ROOT_DIR}.«{h}».Proof")
+    adir = root / ROOT_DIR / h / ATTEMPT_DIR
+    if adir.is_dir():
+        targets += [
+            f"{ROOT_DIR}.«{h}».{ATTEMPT_DIR}.«{a.name}».Attempt"
+            for a in sorted(adir.iterdir())
+            if (a / "Attempt.lean").is_file()
+        ]
+    order: list[tuple[str, Path]] = []
+    state: dict[str, int] = {}
+
+    def visit(module: str) -> bool:
+        if state.get(module) == 2:
+            return True
+        if state.get(module) == 1:
+            raise ToolError(f"import cycle at {module}")
+        root_name = module.split(".", 1)[0]
+        if root_name in CORE_ROOTS:
+            return True
+        if root_name != ROOT_DIR:
+            return False
+        path = _module_file(root, module)
+        if not path.is_file():
+            raise ToolError(f"missing module {module}")
+        state[module] = 1
+        for dep in _ANY_IMPORT_RE.findall(strip_comments(path.read_text(encoding="utf-8"))):
+            if not visit(dep):
+                return False
+        state[module] = 2
+        order.append((module, path))
+        return True
+
+    for t in targets:
+        if not visit(t):
+            return None
+    return order
+
+
+def fast_check(root: Path, h: str, attempt: str | None = None) -> list[str] | None:
+    """Compile and audit with core Lean only. None means the fast path does not apply."""
+    plan = fast_plan(root, h)
+    if plan is None:
+        return None
+    out = root / ".lake" / "fast"
+    out.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "LEAN_PATH": str(out)}
+    for module, path in plan:
+        olean = _module_file(out, module).with_suffix(".olean")
+        olean.parent.mkdir(parents=True, exist_ok=True)
+        run = subprocess.run(
+            ["lean", "-R", str(root), "-o", str(olean), str(path)],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if run.returncode != 0:
+            return [f"{module}: {(run.stdout + run.stderr).strip()[:2000]}"]
+    targets: list[str | None] = [attempt] if attempt else []
+    if (root / ROOT_DIR / h / "Proof.lean").is_file():
+        targets.append(None)
+    errors: list[str] = []
+    for a in targets:
+        src = out / f"Audit_{h}_{a or 'proof'}.lean"
+        src.write_text(audit_source(h, a), encoding="utf-8")
+        run = subprocess.run(
+            ["lean", str(src)], cwd=root, env=env, capture_output=True, text=True, timeout=600
+        )
+        output = run.stdout + run.stderr
+        if run.returncode != 0:
+            errors.append(f"{h}: Lean rejected the proof:\n{output.strip()[:2000]}")
+            continue
+        bad = forbidden_axioms(parse_axioms(output))
+        if bad:
+            errors.append(f"{h}: forbidden axioms {bad}")
+    return errors
+
+
 # Index (rendered by arginf.com) ------------------------------------------------
 
 
@@ -527,6 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     p_prom = sub.add_parser("promote", help="make a complete attempt the theorem's proof")
     p_prom.add_argument("theorem")
     p_prom.add_argument("attempt")
+    p_fast = sub.add_parser("fast", help="compile + audit a core-only folder without Mathlib")
+    p_fast.add_argument("theorem")
+    p_fast.add_argument("--attempt", default=None)
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
     p_audit.add_argument("hashes", nargs="*", help="default: every folder with a Proof.lean")
     p_audit.add_argument("--attempt", default=None, help="audit this complete attempt instead")
@@ -579,6 +677,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "promote":
             promote(root, args.theorem, args.attempt)
             print(f"wrote {ROOT_DIR}/{args.theorem}/Proof.lean")
+        elif args.cmd == "fast":
+            result = fast_check(root, args.theorem, args.attempt)
+            if result is None:
+                print("needs-full-build")
+                return 3
+            for e in result:
+                print(f"error: {e}", file=sys.stderr)
+            if result:
+                return 1
+            print("ok: compiled and audited with Lean core only")
         elif args.cmd == "audit":
             hashes = args.hashes or sorted(
                 p.parent.name for p in (root / ROOT_DIR).glob("*/Proof.lean")

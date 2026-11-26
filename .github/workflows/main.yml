@@ -18,13 +18,26 @@ jobs:
         with:
           auto-config: false
           use-mathlib-cache: false
+      - name: Restore dependency cache
+        id: depcache
+        uses: actions/cache/restore@v4
+        with:
+          path: .lake/packages
+          key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
       - name: Fetch dependencies and restore build caches
+        if: steps.depcache.outputs.cache-hit != 'true'
         run: |
           lake exe cache get || true
           # cslib-frontier publishes build outputs for every main commit; fall back to building.
           (cd .lake/packages/cslib-frontier && bash scripts/cache/get.sh) || echo "frontier cache miss"
       - name: Build
         run: lake build
+      - name: Save dependency cache for PR checks
+        if: steps.depcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .lake/packages
+          key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
       - run: python3 tools/arginf.py audit
       - run: python3 tools/arginf.py index > index.json
       - uses: actions/upload-artifact@v4

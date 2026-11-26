@@ -51,25 +51,51 @@ jobs:
     needs: scope
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      HASH: ${{ needs.scope.outputs.hash }}
+      ATTEMPT: ${{ needs.scope.outputs.attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: leanprover/lean-action@v1
+      - name: Install Lean (pinned toolchain only)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
+      # Fast path: a folder that only imports Lean core compiles in seconds, with no Mathlib.
+      - name: Fast check (core-only folders)
+        id: fast
+        run: |
+          if [ -z "$HASH" ]; then echo "full=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          set +e
+          if [ -n "$ATTEMPT" ] && ! grep -qw sorry "Theorems/$HASH/attempts/$ATTEMPT/Attempt.lean"; then
+            python3 tools/arginf.py fast "$HASH" --attempt "$ATTEMPT"
+          else
+            python3 tools/arginf.py fast "$HASH"
+          fi
+          code=$?
+          set -e
+          if [ $code -eq 3 ]; then echo "full=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          exit $code
+      # Full path: restore the dependency build (Mathlib, CSLib, cslib-frontier) saved by main.
+      - name: Restore dependency cache
+        if: steps.fast.outputs.full == 'true'
+        uses: actions/cache/restore@v4
         with:
-          auto-config: false
-          use-mathlib-cache: false
-      - name: Fetch dependencies and restore build caches
+          path: .lake/packages
+          key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+      - name: Fetch any missing build outputs
+        if: steps.fast.outputs.full == 'true'
         run: |
           lake exe cache get || true
-          # cslib-frontier publishes build outputs for every main commit; fall back to building.
           (cd .lake/packages/cslib-frontier && bash scripts/cache/get.sh) || echo "frontier cache miss"
       - name: Build
+        if: steps.fast.outputs.full == 'true'
         run: lake build
       - name: Proof matches statement, allowed axioms only
-        env:
-          HASH: ${{ needs.scope.outputs.hash }}
-          ATTEMPT: ${{ needs.scope.outputs.attempt }}
+        if: steps.fast.outputs.full == 'true'
         run: |
           # Partial attempts (with sorry) may merge as checkpoints; only complete ones are audited
           # here, and only Proof.lean makes a theorem verified.

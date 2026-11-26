@@ -294,3 +294,44 @@ class FolderWithAttemptsTests(unittest.TestCase):
         h = arginf.new_theorem(root, "T", "True", kind="theorem")
         arginf.start_attempt(root, h, parent=None, note="")
         self.assertEqual(arginf.check_folder(root / "Theorems" / h), [])
+
+
+class FastPathTests(unittest.TestCase):
+    """Proofs that only need Lean core compile with plain `lean`, skipping Mathlib entirely."""
+
+    def _repo(self, imports: tuple[str, ...]) -> tuple[Path, str]:
+        root = Path(tempfile.mkdtemp())
+        (root / "Theorems").mkdir()
+        h = arginf.new_theorem(root, "T", "∀ n : Nat, n + 0 = n", kind="lemma", imports=imports)
+        a = arginf.start_attempt(root, h, None, "")
+        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+        f.write_text(f.read_text().replace("by\n  sorry", "fun n => Nat.add_zero n"))
+        a = arginf.seal_attempt(f.parent)
+        arginf.promote(root, h, a)
+        return root, h
+
+    def test_core_only_folder_plan_in_dependency_order(self) -> None:
+        root, h = self._repo(("Init",))
+        plan = arginf.fast_plan(root, h)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        names = [m for m, _ in plan]
+        self.assertEqual(names[0], f"Theorems.«{h}».Statement")
+        self.assertEqual(names[-1], f"Theorems.«{h}».Proof")
+        self.assertTrue(any(".attempts." in n for n in names))
+
+    def test_external_imports_need_the_full_build(self) -> None:
+        root, h = self._repo(("Mathlib",))
+        self.assertIsNone(arginf.fast_plan(root, h))
+
+    def test_follows_theorem_dependencies(self) -> None:
+        root, h = self._repo(("Init",))
+        h2 = arginf.new_theorem(root, "U", "True", kind="theorem", imports=("Init",))
+        stmt = root / "Theorems" / h2 / "Statement.lean"
+        stmt.write_text(f"import Theorems.«{h}».Proof\n" + stmt.read_text())
+        plan = arginf.fast_plan(root, h2)
+        assert plan is not None
+        names = [m for m, _ in plan]
+        self.assertLess(
+            names.index(f"Theorems.«{h}».Proof"), names.index(f"Theorems.«{h2}».Statement")
+        )
