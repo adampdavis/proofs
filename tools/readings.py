@@ -32,6 +32,7 @@ TEMPLATES = ("chatml",)
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
 MAX_TOKENS = 512
+CONTEXT = 8192
 _SHA = re.compile(r"[0-9a-f]{64}")
 
 
@@ -126,7 +127,9 @@ def merge(existing: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dic
     return sorted(key.values(), key=lambda r: (r["hash"], r["modelSha256"]))
 
 
-PUBLISHED = ("text", "model", "modelSha256", "runtime", "cpu", "promptSha256", "maxTokens")
+PUBLISHED = (
+    "text", "model", "modelSha256", "runtime", "cpu", "promptSha256", "maxTokens", "truncated",
+)  # fmt: skip
 
 
 def embed(index: dict[str, Any], rs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -161,6 +164,7 @@ def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
         str(binary),
         "-m", str(model),
         "-f", str(prompt_file),
+        "-c", str(CONTEXT),
         "-n", str(MAX_TOKENS),
         "--temp", "0",
         "--top-k", "1",
@@ -168,6 +172,20 @@ def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
         "--threads", str(THREADS),
         "--no-display-prompt",
     ]  # fmt: skip
+
+
+_EVAL_RE = re.compile(r"\beval time\s*=\s*[\d.]+\s*ms\s*/\s*(\d+)\s*(?:runs|tokens)")
+
+
+def generated_tokens(stderr: str) -> int | None:
+    """Tokens generated, from llama.cpp's performance summary (the non-prompt eval line)."""
+    counts = [int(m.group(1)) for m in _EVAL_RE.finditer(stderr)]
+    return counts[-1] if counts else None
+
+
+def is_truncated(stderr: str) -> bool:
+    n = generated_tokens(stderr)
+    return n is not None and n >= MAX_TOKENS - 1
 
 
 def clean_output(text: str) -> str:
@@ -244,6 +262,7 @@ def generate(
                 "runtime": f"{allow.runtime.name} {allow.runtime.version}",
                 "cpu": _cpu(),
                 "maxTokens": MAX_TOKENS,
+                "truncated": is_truncated(run.stderr),
                 "promptSha256": digest(message),
                 "seconds": seconds,
             }

@@ -151,3 +151,22 @@ class EmbedTests(unittest.TestCase):
             ],
         )
         self.assertEqual(out["theorems"][1]["readings"], [])
+
+
+class LimitsTests(unittest.TestCase):
+    def test_context_is_explicit(self) -> None:
+        args = readings.generation_args(Path("b"), Path("m"), Path("p"))
+        self.assertIn("-c", args)
+        self.assertEqual(args[args.index("-c") + 1], str(readings.CONTEXT))
+
+    def test_truncation_detected_from_llama_perf_line(self) -> None:
+        capped = (
+            "llama_perf_context_print:        eval time =   61234.56 ms /   511 runs   "
+            "(  119.83 ms per token,     8.34 tokens per second)\n"
+        )
+        done = capped.replace("511 runs", "87 runs")
+        self.assertEqual(readings.generated_tokens(capped), 511)
+        self.assertTrue(readings.is_truncated(capped))
+        self.assertFalse(readings.is_truncated(done))
+        self.assertFalse(readings.is_truncated("no perf line"))
+        self.assertIsNone(readings.generated_tokens("no perf line"))
