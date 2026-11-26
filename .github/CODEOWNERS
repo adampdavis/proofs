@@ -1,10 +1,6 @@
-# Changes to CI, tooling and the Lean project need a maintainer review.
-/.github/ @adampdavis
-/tools/ @adampdavis
-/lakefile.toml @adampdavis
-/lake-manifest.json @adampdavis
-/lean-toolchain @adampdavis
-/LICENSE @adampdavis
-/curation.toml @adampdavis
-/models.toml @adampdavis
-/CODE_OF_CONDUCT.md @adampdavis
+# Review rules (enforced by the ruleset on main: code-owner review required where owned).
+# Everything needs a maintainer's review by default...
+* @adampdavis
+# ...except theorem folders, which hold Lean only. New statements and complete proofs are
+# merged automatically once CI passes (tools/automerge.py); partial attempts a maintainer merges.
+/Theorems/
