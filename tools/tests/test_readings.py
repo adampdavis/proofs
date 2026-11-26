@@ -66,7 +66,8 @@ class PromptTests(unittest.TestCase):
             readings.user_message(root, h),
             "Translate the following Lean statement into natural language. Reply with only the "
             "translation of what the statement says: no preamble, and do not describe the "
-            "imports, the definition or the Lean syntax.\n```\n"
+            "imports, the definition or the Lean syntax. Use LaTeX math notation between $ "
+            "signs where it helps.\n```\n"
             "import Init\n\ndef statement : Prop :=\n  ∀ n : Nat, n + 0 = n\n```",
         )
         self.assertNotIn(h, readings.user_message(root, h))

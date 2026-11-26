@@ -30,7 +30,8 @@ from tools import arginf
 PROMPT = (
     "Translate the following Lean statement into natural language. Reply with only the "
     "translation of what the statement says: no preamble, and do not describe the imports, "
-    "the definition or the Lean syntax.\n```\n{lean}\n```"
+    "the definition or the Lean syntax. Use LaTeX math notation between $ signs where it "
+    "helps.\n```\n{lean}\n```"
 )
 TEMPLATES = ("chatml",)
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
