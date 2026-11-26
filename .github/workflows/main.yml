@@ -16,10 +16,15 @@ jobs:
           persist-credentials: false
       - uses: leanprover/lean-action@v1
         with:
-          use-mathlib-cache: true
-          build: true
-          test: false
-          lint: false
+          auto-config: false
+          use-mathlib-cache: false
+      - name: Fetch dependencies and restore build caches
+        run: |
+          lake exe cache get || true
+          # cslib-frontier publishes build outputs for every main commit; fall back to building.
+          (cd .lake/packages/cslib-frontier && bash scripts/cache/get.sh) || echo "frontier cache miss"
+      - name: Build
+        run: lake build
       - run: python3 tools/arginf.py audit
       - run: python3 tools/arginf.py index > index.json
   publish:

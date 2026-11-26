@@ -1,0 +1,4 @@
+title = "Does $\\mathsf{P} \\neq \\mathsf{NP}$ imply one-way functions?"
+kind = "open-question"
+description = "The converse of the known direction (one-way functions imply $\\mathsf{SAT} \\notin \\mathsf{P}$). Stated with $\\mathsf{P} \\neq \\mathsf{NP}$ as $\\mathsf{SAT} \\notin \\mathsf{P}$, using the cslib-frontier definitions. Basing one-way functions on worst-case NP-hardness is a central open problem with known barriers."
+tags = ["featured"]

@@ -183,7 +183,15 @@ def _toml_str(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
-def new_theorem(root: Path, title: str, prop: str, kind: str, description: str = "") -> str:
+def new_theorem(
+    root: Path,
+    title: str,
+    prop: str,
+    kind: str,
+    description: str = "",
+    imports: tuple[str, ...] = ("Mathlib",),
+    tags: tuple[str, ...] = (),
+) -> str:
     if kind not in KINDS:
         raise ToolError(f"kind must be one of {', '.join(KINDS)}")
     body = f"def statement : Prop :=\n  {prop.strip()}\n"
@@ -192,13 +200,18 @@ def new_theorem(root: Path, title: str, prop: str, kind: str, description: str =
     if folder.exists():
         raise ToolError(f"{folder} already exists: this statement is already in the repo")
     folder.mkdir(parents=True)
+    for imp in imports:
+        if not re.fullmatch(r"[A-Za-z_][\w.«»]*", imp):
+            raise ToolError(f"bad import {imp!r}")
+    header = "".join(f"import {imp}\n" for imp in imports)
     (folder / "Statement.lean").write_text(
-        f"import Mathlib\n\nnamespace {ROOT_DIR}.«{h}»\n\n{body}\nend {ROOT_DIR}.«{h}»\n",
+        f"{header}\nnamespace {ROOT_DIR}.«{h}»\n\n{body}\nend {ROOT_DIR}.«{h}»\n",
         encoding="utf-8",
     )
+    tag_list = ", ".join(_toml_str(t) for t in tags)
     (folder / "meta.toml").write_text(
         f"title = {_toml_str(title)}\nkind = {_toml_str(kind)}\n"
-        f"description = {_toml_str(description)}\ntags = []\n",
+        f"description = {_toml_str(description)}\ntags = [{tag_list}]\n",
         encoding="utf-8",
     )
     return h
@@ -499,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
     p_new.add_argument("--title", required=True)
     p_new.add_argument("--kind", choices=KINDS, default="theorem")
     p_new.add_argument("--description", default="")
+    p_new.add_argument("--import", dest="imports", action="append", default=None)
+    p_new.add_argument("--tag", dest="tags", action="append", default=[])
     p_check = sub.add_parser("check", help="run the PR scope and folder checks locally")
     p_check.add_argument("--base", default="origin/main")
     p_check.add_argument("--branch", default=None)
@@ -521,7 +536,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "hash":
             print(statement_hash(args.file.read_text(encoding="utf-8")))
         elif args.cmd == "new":
-            h = new_theorem(root, args.title, args.prop, args.kind, args.description)
+            h = new_theorem(
+                root,
+                args.title,
+                args.prop,
+                args.kind,
+                args.description,
+                tuple(args.imports or ["Mathlib"]),
+                tuple(args.tags),
+            )
             print(h)
             print(f"next: git switch -c {h}/statement && git add {ROOT_DIR}/{h}", file=sys.stderr)
         elif args.cmd == "check":
