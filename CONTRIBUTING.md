@@ -14,7 +14,7 @@ Everything happens through GitHub. There are no site accounts. You need `git`, `
 **What merges how:**
 - **A complete proof** (a new attempt with no `sorry`) of a statement that's already on `main` **merges automatically** once CI is green. No human is involved.
 - **A partial attempt** (with `sorry`) is a checkpoint: it needs CI to be green, and then a maintainer merges it. It must make progress, so CI rejects the bare `by sorry` template and unchanged copies of the parent.
-- **A new statement** needs a maintainer's review, because Lean can't tell whether a statement is the right one.
+- **A new statement** (a PR adding only `Theorems/<hash>/Statement.lean`) **merges automatically** once CI is green, if it has no `sorry` and imports only Lean core, Mathlib, CSLib or cslib-frontier. Each author gets up to 5 a day; beyond that, a maintainer merges.
 - **Everything outside `Theorems/`** (tooling, CI, `curation.toml`, `models.toml`) is maintainer-only.
 
 ## Add a statement

@@ -22,12 +22,25 @@ ATTEMPT = files(
 )
 
 
+STATEMENT = (
+    f"import Mathlib\n\nnamespace Theorems.«{H}»\n\n"
+    f"def statement : Prop :=\n  True\n\nend Theorems.«{H}»\n"
+)
+
+
 class DecideTests(unittest.TestCase):
     def ok(
-        self, fs: list[dict[str, str]], lean: str = COMPLETE, exists: bool = True
+        self,
+        fs: list[dict[str, str]],
+        lean: str = COMPLETE,
+        exists: bool = True,
+        recent: int = 0,
     ) -> automerge.Decision:
         return automerge.decide(
-            fs, statement_exists=lambda h: exists, attempt_lean=lambda path: lean
+            fs,
+            statement_exists=lambda h: exists,
+            attempt_lean=lambda path: lean,
+            recent_statements=lambda: recent,
         )
 
     def test_complete_attempt_on_existing_statement_merges(self) -> None:
@@ -42,8 +55,7 @@ class DecideTests(unittest.TestCase):
         self.assertTrue(self.ok(ATTEMPT, COMPLETE + "-- sorry\n").merge)
         self.assertFalse(self.ok(ATTEMPT, COMPLETE.replace("trivial", "sorry")).merge)
 
-    def test_new_statements_and_other_files_never_auto_merge(self) -> None:
-        self.assertFalse(self.ok(files(f"Theorems/{H}/Statement.lean")).merge)
+    def test_other_files_never_auto_merge(self) -> None:
         self.assertFalse(self.ok(ATTEMPT + files(".github/workflows/pr.yml")).merge)
         self.assertFalse(self.ok(ATTEMPT + files("curation.toml")).merge)
         self.assertFalse(self.ok(ATTEMPT + files(f"Theorems/{H}/Statement.lean")).merge)
@@ -58,6 +70,35 @@ class DecideTests(unittest.TestCase):
 
     def test_statement_must_already_exist_on_main(self) -> None:
         self.assertFalse(self.ok(ATTEMPT, exists=False).merge)
+
+    def test_new_statement_merges_on_its_own(self) -> None:
+        d = self.ok(files(f"Theorems/{H}/Statement.lean"), lean=STATEMENT, exists=False)
+        self.assertTrue(d.merge, d.reason)
+        self.assertEqual(d.kind, "statement")
+
+    def test_statement_guardrails(self) -> None:
+        stmt = files(f"Theorems/{H}/Statement.lean")
+        self.assertFalse(self.ok(stmt, lean=STATEMENT.replace("True", "sorry"), exists=False).merge)
+        bad_import = STATEMENT.replace("import Mathlib", "import Mathlib\nimport SomeOther.Lib")
+        self.assertFalse(self.ok(stmt, lean=bad_import, exists=False).merge)
+        for ok_import in (
+            "Init",
+            "Std",
+            "Lean",
+            "Mathlib.Data.Nat.Basic",
+            "Cslib.Crypto",
+            "CslibFrontier.X",
+        ):
+            lean = STATEMENT.replace("import Mathlib", f"import {ok_import}")
+            self.assertTrue(self.ok(stmt, lean=lean, exists=False).merge, ok_import)
+        self.assertFalse(
+            self.ok(stmt, lean=STATEMENT, exists=False, recent=automerge.DAILY_STATEMENTS).merge
+        )
+        self.assertFalse(self.ok(stmt, lean=STATEMENT, exists=True).merge)  # already on main
+
+    def test_statement_and_attempt_together_wait_for_a_maintainer(self) -> None:
+        both = files(f"Theorems/{H}/Statement.lean") + ATTEMPT
+        self.assertFalse(self.ok(both, exists=False).merge)
 
     def test_path_tricks(self) -> None:
         bad = files(

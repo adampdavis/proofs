@@ -2,10 +2,12 @@
 """Merge complete, verified proofs without a human (Python 3.11+, standard library only).
 
 Runs from the default branch after "PR checks" succeed (workflow_run), so no PR code executes
-with write access. It merges only a PR that *adds* exactly one attempt folder
-(Attempt.lean + attempt.toml) to a statement that already exists on main, and whose
-Attempt.lean has no `sorry`. CI has already compiled it and audited its axioms. Everything else,
-including new statements and partial attempts, waits for a maintainer.
+with write access. It merges a PR that *adds* either
+- one new Statement.lean (Lean only, no sorry, allowlisted imports, at most DAILY_STATEMENTS per
+  author per 24 h), or
+- one attempt folder (Attempt.lean + attempt.toml) with no `sorry` for a statement on main.
+CI has already compiled it and audited any proof's axioms. Everything else, including partial
+attempts, waits for a maintainer.
 
     python3 -m tools.automerge <head-sha>
 """
@@ -20,6 +22,7 @@ import sys
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -28,22 +31,52 @@ from tools import arginf
 _SORRY = re.compile(r"\bsorry\b")
 
 
+# New statements merge on their own too (they're Lean only), within these guardrails:
+ALLOWED_IMPORT_ROOTS = ("Init", "Std", "Lean", "Mathlib", "Cslib", "CslibFrontier")
+DAILY_STATEMENTS = 5  # per author per 24 h; beyond that a maintainer merges
+
+
 @dataclass(frozen=True, slots=True)
 class Decision:
     merge: bool
     reason: str
     theorem: str | None = None
     attempt: str | None = None
+    kind: str = "proof"
+
+
+def _decide_statement(
+    h: str,
+    statement_exists: Callable[[str], bool],
+    read: Callable[[str], str],
+    recent_statements: Callable[[], int],
+) -> Decision:
+    if statement_exists(h):
+        return Decision(False, f"statement {h} already exists", h, kind="statement")
+    text = read(f"{arginf.ROOT_DIR}/{h}/Statement.lean")
+    if _SORRY.search(arginf.strip_comments(text)):
+        return Decision(False, "a statement may not contain sorry", h, kind="statement")
+    for imp in re.findall(r"(?m)^import\s+(\S+)\s*$", text):
+        if imp.split(".", 1)[0] not in ALLOWED_IMPORT_ROOTS:
+            return Decision(False, f"import {imp} is outside the allowlist", h, kind="statement")
+    if recent_statements() >= DAILY_STATEMENTS:
+        return Decision(
+            False, f"author reached {DAILY_STATEMENTS} new statements in 24 h", h, kind="statement"
+        )
+    return Decision(True, "new Lean-only statement, checks passed", h, kind="statement")
 
 
 def decide(
     files: list[dict[str, Any]],
     statement_exists: Callable[[str], bool],
     attempt_lean: Callable[[str], str],
+    recent_statements: Callable[[], int] = lambda: 0,
 ) -> Decision:
+    """Merge either a new statement (Statement.lean only) or a new complete attempt."""
     expected = {"Attempt.lean", "attempt.toml"}
     folders: set[tuple[str, str]] = set()
     names: set[str] = set()
+    statements: set[str] = set()
     for f in files:
         p = PurePosixPath(str(f.get("filename", "")))
         parts = p.parts
@@ -52,6 +85,14 @@ def decide(
         if f.get("status") != "added":
             return Decision(False, f"{p} is {f.get('status')}, not a new file")
         if (
+            len(parts) == 3
+            and parts[0] == arginf.ROOT_DIR
+            and arginf.HASH_RE.match(parts[1])
+            and parts[2] == "Statement.lean"
+        ):
+            statements.add(parts[1])
+            continue
+        if (
             len(parts) != 5
             or parts[0] != arginf.ROOT_DIR
             or not arginf.HASH_RE.match(parts[1])
@@ -59,14 +100,21 @@ def decide(
             or not arginf.HASH_RE.match(parts[3])
             or parts[4] not in expected
         ):
-            return Decision(False, f"{p} is not part of a new attempt")
+            return Decision(False, f"{p} is not a new statement or attempt")
         folders.add((parts[1], parts[3]))
         names.add(parts[4])
+    if statements and folders:
+        return Decision(False, "a new statement and an attempt together: a maintainer merges")
+    if statements:
+        if len(statements) != 1:
+            return Decision(False, "one new statement per PR")
+        (h,) = statements
+        return _decide_statement(h, statement_exists, attempt_lean, recent_statements)
     if len(folders) != 1 or names != expected:
         return Decision(False, "must add exactly one attempt (Attempt.lean and attempt.toml)")
     ((h, a),) = folders
     if not statement_exists(h):
-        return Decision(False, f"statement {h} is not on main yet (new statements need review)")
+        return Decision(False, f"statement {h} is not on main yet")
     code = arginf.strip_comments(
         attempt_lean(f"{arginf.ROOT_DIR}/{h}/{arginf.ATTEMPT_DIR}/{a}/Attempt.lean")
     )
@@ -108,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         print("skip: no single open PR at this commit (closed, updated or ambiguous)")
         return 0
     number = str(matches[0]["number"])
+    login = str(matches[0]["user"]["login"])
     files = _api("GET", f"{base}/pulls/{number}/files?per_page=100", token)
 
     def statement_exists(h: str) -> bool:
@@ -121,7 +170,20 @@ def main(argv: list[str] | None = None) -> int:
         meta = _api("GET", f"{base}/contents/{path}?ref={sha}", token)
         return base64.b64decode(meta["content"]).decode("utf-8")
 
-    d = decide(files, statement_exists, attempt_lean)
+    def recent_statements() -> int:
+        """Statements this author got auto-merged in the last 24 h (from our commit titles)."""
+        since = (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        commits = _api("GET", f"{base}/commits?sha=main&since={since}&per_page=100", token)
+        tag = f"by @{login}"
+        return sum(
+            1
+            for c in commits
+            if c["commit"]["message"].startswith("Merge #")
+            and ": statement " in c["commit"]["message"].split("\n", 1)[0]
+            and c["commit"]["message"].split("\n", 1)[0].endswith(tag)
+        )
+
+    d = decide(files, statement_exists, attempt_lean, recent_statements)
     print(f"{'merge' if d.merge else 'skip'}: {d.reason}")
     if not d.merge:
         return 0
@@ -132,7 +194,11 @@ def main(argv: list[str] | None = None) -> int:
         {
             "sha": sha,
             "merge_method": "merge",
-            "commit_title": f"Merge #{number}: proof {d.attempt}",
+            "commit_title": (
+                f"Merge #{number}: statement {d.theorem} by @{login}"
+                if d.kind == "statement"
+                else f"Merge #{number}: proof {d.attempt} by @{login}"
+            ),
         },
     )
     # Merges made with GITHUB_TOKEN don't trigger push workflows, so publish explicitly.
