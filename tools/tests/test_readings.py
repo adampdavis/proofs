@@ -198,3 +198,19 @@ class ThinkTests(unittest.TestCase):
         self.assertEqual(
             readings.clean_output("<think>\n\n</think>\n\nFor every $n$."), "For every $n$."
         )
+
+
+class PruneTests(unittest.TestCase):
+    """Only readings from models still allowlisted in models.toml are kept and published."""
+
+    def test_embed_and_prune_keep_only_allowlisted_models(self) -> None:
+        old, new = "1" * 64, "2" * 64
+        rs = [
+            {"hash": "a" * 12, "text": "old", "model": "Old", "modelSha256": old},
+            {"hash": "a" * 12, "text": "new", "model": "New", "modelSha256": new},
+        ]
+        kept = readings.prune(rs, {new})
+        self.assertEqual([r["text"] for r in kept], ["new"])
+        index = {"version": 2, "theorems": [{"hash": "a" * 12}]}
+        out = readings.embed(index, rs, {new})
+        self.assertEqual([r["text"] for r in out["theorems"][0]["readings"]], ["new"])

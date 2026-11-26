@@ -143,10 +143,17 @@ PUBLISHED = (
 )  # fmt: skip
 
 
-def embed(index: dict[str, Any], rs: list[dict[str, Any]]) -> dict[str, Any]:
+def prune(rs: list[dict[str, Any]], allowed: set[str]) -> list[dict[str, Any]]:
+    """Drop readings from models no longer in models.toml."""
+    return [r for r in rs if r.get("modelSha256") in allowed]
+
+
+def embed(
+    index: dict[str, Any], rs: list[dict[str, Any]], allowed: set[str] | None = None
+) -> dict[str, Any]:
     """Attach each statement's readings to the published index (reproduction details only)."""
     by_hash: dict[str, list[dict[str, Any]]] = {}
-    for r in rs:
+    for r in prune(rs, allowed) if allowed is not None else rs:
         by_hash.setdefault(r["hash"], []).append({k: r[k] for k in PUBLISHED if k in r})
     for t in index["theorems"]:
         t["readings"] = by_hash.get(t["hash"], [])
@@ -304,7 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         rs = (
             json.loads(args.readings.read_text(encoding="utf-8")) if args.readings.is_file() else []
         )
-        args.index.write_text(json.dumps(embed(idx, rs), ensure_ascii=False, indent=1) + "\n")
+        allowed = {m.sha256 for m in load_models(root / "models.toml").models}
+        rs = prune(rs, allowed)
+        args.readings.write_text(json.dumps(rs, ensure_ascii=False, indent=1) + "\n")
+        args.index.write_text(
+            json.dumps(embed(idx, rs, allowed), ensure_ascii=False, indent=1) + "\n"
+        )
         return 0
     try:
         allow = load_models(root / "models.toml")
@@ -317,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             existing = json.loads(args.existing.read_text(encoding="utf-8"))
         prompts = {h: digest(user_message(root, h)) for h in hashes}
         todo = missing(hashes, existing, model.sha256, prompts)
+        existing = prune(existing, {m.sha256 for m in allow.models})
         result = merge(existing, generate(root, allow, model, todo, args.cache) if todo else [])
     except (ReadingError, OSError, ValueError) as err:
         print(f"error: {err}", file=sys.stderr)
