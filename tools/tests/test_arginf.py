@@ -255,3 +255,41 @@ class IndexFilesTests(unittest.TestCase):
         att = {x["hash"]: x for x in t["attempts"]}[a]
         self.assertIn("trivial", att["lean"])
         self.assertTrue(att["complete"])
+
+
+class JunkCheckpointTests(unittest.TestCase):
+    """A checkpoint must make progress: no bare template, no unchanged copy of its parent."""
+
+    def test_bare_template_is_rejected(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        a = arginf.start_attempt(root, h, None)  # just `by sorry`
+        errs = arginf.check_attempt(root / "Theorems" / h / "attempts" / a)
+        self.assertTrue(any("no progress" in e for e in errs), errs)
+
+    def test_unchanged_copy_of_parent_is_rejected(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
+        p = arginf.start_attempt(root, h, None)
+        f = root / "Theorems" / h / "attempts" / p / "Attempt.lean"
+        f.write_text(f.read_text().replace("by\n  sorry", "by\n  intro n\n  sorry"))
+        p = arginf.seal_attempt(f.parent)
+        child = arginf.start_attempt(root, h, p)  # copy, not yet edited
+        cf = root / "Theorems" / h / "attempts" / child / "Attempt.lean"
+        sealed = arginf.seal_attempt(cf.parent)
+        errs = arginf.check_attempt(root / "Theorems" / h / "attempts" / sealed)
+        self.assertTrue(any("no progress" in e for e in errs), errs)
+
+    def test_real_progress_passes(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
+        p = arginf.start_attempt(root, h, None)
+        f = root / "Theorems" / h / "attempts" / p / "Attempt.lean"
+        f.write_text(f.read_text().replace("by\n  sorry", "by\n  intro n\n  sorry"))
+        p = arginf.seal_attempt(f.parent)
+        self.assertEqual(arginf.check_attempt(root / "Theorems" / h / "attempts" / p), [])
+        child = arginf.start_attempt(root, h, p)
+        cf = root / "Theorems" / h / "attempts" / child / "Attempt.lean"
+        cf.write_text(cf.read_text().replace("intro n\n  sorry", "intro n\n  rfl"))
+        c = arginf.seal_attempt(cf.parent)
+        self.assertEqual(arginf.check_attempt(root / "Theorems" / h / "attempts" / c), [])

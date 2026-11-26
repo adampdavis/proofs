@@ -341,7 +341,30 @@ def check_attempt(folder: Path) -> list[str]:
     for g in folder.iterdir():
         if g.name not in ATTEMPT_FILES:
             errors.append(f"{g}: only {', '.join(sorted(ATTEMPT_FILES))} are allowed")
+    errors += _progress_errors(folder, code, parent)
     return errors
+
+
+def _progress_errors(folder: Path, code: str, parent: str | None) -> list[str]:
+    """A checkpoint must make progress: not the bare template, not an unchanged copy."""
+    h = folder.parent.parent.name
+    body = _attempt_body(code)
+    template = _attempt_body(f"theorem proof : {ROOT_DIR}.«{h}».statement := by\n  sorry")
+    if body == template:
+        return [f"{folder}: no progress: this is the empty template (`by sorry`)"]
+    if parent:
+        pfile = folder.parent / parent / "Attempt.lean"
+        if pfile.is_file():
+            ptext = pfile.read_text(encoding="utf-8")
+            extra = [
+                ln
+                for ln in ptext.splitlines()
+                if ln.startswith("import ") and "Statement" not in ln
+            ]
+            pcode = "\n".join(extra + ["", _attempt_code(ptext)]).strip()
+            if _attempt_body(pcode) == body:
+                return [f"{folder}: no progress: identical to its parent {parent}"]
+    return []
 
 
 def attempt_info(folder: Path) -> dict[str, Any]:
