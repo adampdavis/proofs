@@ -27,11 +27,17 @@ from typing import Any
 
 from tools import arginf
 
-PROMPT = "Translate the following Lean statement into natural language:\n```\n{lean}\n```"
+PROMPT = (
+    "Translate the following Lean statement into natural language. Reply with only the "
+    "translation of what the statement says: no preamble, and do not describe the imports, "
+    "the definition or the Lean syntax. Use LaTeX math notation between $ signs where it "
+    "helps.\n```\n{lean}\n```"
+)
 TEMPLATES = ("chatml",)
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
-MAX_TOKENS = 256
+MAX_TOKENS = 512
+CONTEXT = 8192
 _SHA = re.compile(r"[0-9a-f]{64}")
 
 
@@ -110,8 +116,17 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def missing(hashes: list[str], existing: list[dict[str, Any]], model_sha: str) -> list[str]:
-    done = {r["hash"] for r in existing if r.get("modelSha256") == model_sha}
+def missing(
+    hashes: list[str], existing: list[dict[str, Any]], model_sha: str, prompts: dict[str, str]
+) -> list[str]:
+    """Statements needing a (re)reading: new, or read with another model, cap or prompt."""
+    done = {
+        r["hash"]
+        for r in existing
+        if r.get("modelSha256") == model_sha
+        and r.get("maxTokens") == MAX_TOKENS
+        and r.get("promptSha256") == prompts.get(r["hash"])
+    }
     return [h for h in hashes if h not in done]
 
 
@@ -122,7 +137,9 @@ def merge(existing: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dic
     return sorted(key.values(), key=lambda r: (r["hash"], r["modelSha256"]))
 
 
-PUBLISHED = ("text", "model", "modelSha256", "runtime", "cpu", "promptSha256")
+PUBLISHED = (
+    "text", "model", "modelSha256", "runtime", "cpu", "promptSha256", "maxTokens", "truncated",
+)  # fmt: skip
 
 
 def embed(index: dict[str, Any], rs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -157,6 +174,7 @@ def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
         str(binary),
         "-m", str(model),
         "-f", str(prompt_file),
+        "-c", str(CONTEXT),
         "-n", str(MAX_TOKENS),
         "--temp", "0",
         "--top-k", "1",
@@ -164,6 +182,20 @@ def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
         "--threads", str(THREADS),
         "--no-display-prompt",
     ]  # fmt: skip
+
+
+_EVAL_RE = re.compile(r"\beval time\s*=\s*[\d.]+\s*ms\s*/\s*(\d+)\s*(?:runs|tokens)")
+
+
+def generated_tokens(stderr: str) -> int | None:
+    """Tokens generated, from llama.cpp's performance summary (the non-prompt eval line)."""
+    counts = [int(m.group(1)) for m in _EVAL_RE.finditer(stderr)]
+    return counts[-1] if counts else None
+
+
+def is_truncated(stderr: str) -> bool:
+    n = generated_tokens(stderr)
+    return n is not None and n >= MAX_TOKENS - 1
 
 
 def clean_output(text: str) -> str:
@@ -239,6 +271,8 @@ def generate(
                 "modelSha256": model.sha256,
                 "runtime": f"{allow.runtime.name} {allow.runtime.version}",
                 "cpu": _cpu(),
+                "maxTokens": MAX_TOKENS,
+                "truncated": is_truncated(run.stderr),
                 "promptSha256": digest(message),
                 "seconds": seconds,
             }
@@ -276,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
         existing: list[dict[str, Any]] = []
         if args.existing and args.existing.is_file():
             existing = json.loads(args.existing.read_text(encoding="utf-8"))
-        todo = missing(hashes, existing, model.sha256)
+        prompts = {h: digest(user_message(root, h)) for h in hashes}
+        todo = missing(hashes, existing, model.sha256, prompts)
         result = merge(existing, generate(root, allow, model, todo, args.cache) if todo else [])
     except (ReadingError, OSError, ValueError) as err:
         print(f"error: {err}", file=sys.stderr)
