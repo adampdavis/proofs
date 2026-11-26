@@ -27,11 +27,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Restore model cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/readings
-          key: readings-${{ matrix.model }}-${{ hashFiles('models.toml') }}
+      # No Actions cache for model weights: the repo's 10 GB cache budget is reserved for the
+      # Lean dependency cache that PR checks rely on. Weights are re-downloaded and SHA-checked.
       - name: Generate
         env:
           MODEL: ${{ matrix.model }}
