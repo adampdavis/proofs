@@ -1,0 +1,15 @@
+# Allowlist for machine-generated English readings. CI refuses any model or runtime not pinned
+# here by exact URL and SHA-256. Changing this file is a maintainer-reviewed PR (CODEOWNERS).
+
+[runtime]
+name = "llama.cpp"
+version = "b12292"
+url = "https://github.com/ggml-org/llama.cpp/releases/download/b12292/llama-b12292-bin-ubuntu-x64.tar.gz"
+sha256 = "ffaf53f17a4601493e6ffb5869c9f0c7d400bb7e124fe0096eee3b65a5862568"
+
+[[model]]
+name = "Qwen2.5-Coder-7B-Instruct-Q4_K_M"
+license = "Apache-2.0"
+url = "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/13fb94bfda8c8cf22497dc57b78f391a9acb426a/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+sha256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
+template = "chatml"

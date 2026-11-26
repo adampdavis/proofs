@@ -44,25 +44,63 @@ jobs:
         with:
           name: index
           path: index.json
+  readings:
+    # One English reading per statement per allowlisted model, generated once and kept on the
+    # index branch. Only new statements cost model time (~30 s each, plus a weights download).
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch existing readings
+        env:
+          REPO: ${{ github.repository }}
+        run: curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o existing.json || echo "[]" > existing.json
+      - name: Generate readings for new statements
+        run: |
+          MODEL=$(python3 -c "import tomllib; print(tomllib.load(open('models.toml','rb'))['model'][0]['name'])")
+          python3 -m tools.readings generate --model "$MODEL" --existing existing.json --out readings.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readings
+          path: readings.json
   publish-index:
     # arginf.com reads index.json from the `index` branch. Runs only after a verified main build.
-    needs: verify
+    needs: [verify, readings]
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: index
+          path: out
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: readings
+          path: out
       - name: Publish to the index branch
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          python3 -c "import json; json.load(open('index.json'))"
-          git init -q -b index site && mv index.json site/ && cd site
+          # A failed readings job never blocks publishing: keep the previous readings instead.
+          [ -f out/readings.json ] || curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o out/readings.json || echo "[]" > out/readings.json
+          python3 -m tools.readings embed out/index.json out/readings.json
+          python3 -c "import json; json.load(open('out/index.json')); json.load(open('out/readings.json'))"
+          git init -q -b index site && cp out/index.json out/readings.json site/ && cd site
           git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
-          git add index.json && git commit -qm "index for $SHA"
+          git add index.json readings.json && git commit -qm "index for $SHA"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" index

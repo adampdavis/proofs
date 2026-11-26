@@ -1,0 +1,39 @@
+# Generate English readings with an allowlisted open-weights model (models.toml) on CPU.
+# Deterministic: fixed prompt, no system message, temperature 0, top-k 1, seed 0, 4 threads.
+name: readings
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model name from models.toml"
+        required: true
+        default: "Qwen2.5-Coder-7B-Instruct-Q4_K_M"
+permissions:
+  contents: read
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(format('["{0}"]', inputs.model)) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # No Actions cache for model weights: the repo's 10 GB cache budget is reserved for the
+      # Lean dependency cache that PR checks rely on. Weights are re-downloaded and SHA-checked.
+      - name: Generate
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          nproc; free -g | head -2
+          time python3 -m tools.readings generate --model "$MODEL" --out readings.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readings-${{ matrix.model }}
+          path: readings.json
