@@ -28,12 +28,12 @@ from typing import Any
 from tools import arginf
 
 PROMPT = (
-    "Translate the following Lean statement into natural language. Reply with only the "
-    "translation of what the statement says: no preamble, and do not describe the imports, "
-    "the definition or the Lean syntax. Use LaTeX math notation between $ signs where it "
-    "helps.\n```\n{lean}\n```"
+    "Translate the following Lean statement into the language of a mathematics research paper. "
+    "Reply with only the translation of what the statement says: no preamble, and do not "
+    "describe the imports, the definition or the Lean syntax. Use standard mathematical "
+    "notation, in LaTeX between $ signs.\n```\n{lean}\n```"
 )
-TEMPLATES = ("chatml",)
+TEMPLATES = ("chatml", "qwen3-nothink")
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
 MAX_TOKENS = 512
@@ -164,9 +164,14 @@ def _cpu() -> str:
 
 def chat_prompt(template: str, user: str) -> str:
     """The raw model input: one user turn, no system message, then the assistant turn."""
-    if template != "chatml":
-        raise ReadingError(f"unknown template {template}")
-    return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if template == "chatml":
+        return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if template == "qwen3-nothink":
+        # Qwen3's documented non-thinking turn: an empty think block opens the reply.
+        return (
+            f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        )
+    raise ReadingError(f"unknown template {template}")
 
 
 def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
