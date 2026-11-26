@@ -354,6 +354,7 @@ def attempt_info(folder: Path) -> dict[str, Any]:
         "openGoals": goals,
         "complete": goals == 0,
         "children": [],
+        "lean": (folder / "Attempt.lean").read_text(encoding="utf-8"),
     }
 
 
@@ -546,18 +547,19 @@ def build_index(root: Path) -> dict[str, Any]:
         stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
         proof = folder / "Proof.lean"
         proof_text = proof.read_text(encoding="utf-8") if proof.is_file() else ""
-        for ah, aa in _ATTEMPT_IMPORT_RE.findall(proof_text):
-            att = root / ROOT_DIR / ah / ATTEMPT_DIR / aa / "Attempt.lean"
-            if ah == folder.name and att.is_file():
-                proof_text += "\n" + att.read_text(encoding="utf-8")
-        deps = sorted(
-            {d for d in _IMPORT_RE.findall(stmt_text + "\n" + proof_text) if d != folder.name}
-        )
+        used = [aa for ah, aa in _ATTEMPT_IMPORT_RE.findall(proof_text) if ah == folder.name]
+        dep_text = stmt_text + "\n" + proof_text
+        for aa in used:
+            att = folder / ATTEMPT_DIR / aa / "Attempt.lean"
+            if att.is_file():
+                dep_text += "\n" + att.read_text(encoding="utf-8")
+        deps = sorted({d for d in _IMPORT_RE.findall(dep_text) if d != folder.name})
         entries[folder.name] = {
             "hash": folder.name,
             "statement": extract_statement(stmt_text),
             "statementLean": stmt_text,
             "proofLean": proof_text or None,
+            "proofAttempt": used[0] if used else None,
             "status": "proved" if proof.is_file() else "open",
             "dependencies": deps,
             "dependents": [],

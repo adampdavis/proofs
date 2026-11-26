@@ -237,3 +237,20 @@ class FastPathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IndexFilesTests(unittest.TestCase):
+    """The index carries each file's own text: Proof.lean alone, and each Attempt.lean."""
+
+    def test_proof_and_attempt_text_are_separate(self) -> None:
+        root = repo()
+        h = arginf.new_theorem(root, "True", imports=("Init",))
+        a = complete(root, h, "trivial")
+        arginf.promote(root, h, a)
+        t = arginf.build_index(root)["theorems"][0]
+        proof = (root / "Theorems" / h / "Proof.lean").read_text()
+        self.assertEqual(t["proofLean"], proof)
+        self.assertEqual(t["proofAttempt"], a)
+        att = {x["hash"]: x for x in t["attempts"]}[a]
+        self.assertIn("theorem proof", att["lean"])
+        self.assertIn("trivial", att["lean"])
