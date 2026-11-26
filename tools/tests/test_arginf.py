@@ -166,5 +166,131 @@ class AxiomTests(unittest.TestCase):
     def test_audit_source_pins_the_statement(self) -> None:
         src = arginf.audit_source("0123456789ab")
         self.assertIn("import Theorems.«0123456789ab».Proof", src)
-        self.assertIn("example : Theorems.«0123456789ab».statement := Theorems.«0123456789ab».proof", src)
+        self.assertIn(
+            "example : Theorems.«0123456789ab».statement := Theorems.«0123456789ab».proof", src
+        )
         self.assertIn("#print axioms Theorems.«0123456789ab».proof", src)
+
+
+class AttemptTests(unittest.TestCase):
+    """Attempts ("lines") are content-addressed, may be partial, and form a tree."""
+
+    def _setup(self) -> tuple[Path, str]:
+        root = Path(tempfile.mkdtemp())
+        (root / "Theorems").mkdir()
+        return root, arginf.new_theorem(root, "T", "∀ n : ℕ, n + 0 = n", kind="theorem")
+
+    def test_start_attempt_creates_hashed_folder_with_sorry(self) -> None:
+        root, h = self._setup()
+        a = arginf.start_attempt(root, h, parent=None, note="induction")
+        folder = root / "Theorems" / h / "attempts" / a
+        self.assertRegex(a, r"^[0-9a-f]{12}$")
+        self.assertIn("sorry", (folder / "Attempt.lean").read_text())
+        self.assertEqual(arginf.check_attempt(folder), [])
+        info = arginf.attempt_info(folder)
+        self.assertEqual(info["parent"], None)
+        self.assertEqual(info["openGoals"], 1)
+        self.assertFalse(info["complete"])
+
+    def test_continue_from_any_attempt(self) -> None:
+        root, h = self._setup()
+        a = arginf.start_attempt(root, h, parent=None, note="first")
+        b = arginf.start_attempt(root, h, parent=a, note="continue")
+        child = root / "Theorems" / h / "attempts" / b
+        self.assertEqual(arginf.attempt_info(child)["parent"], a)
+        parent_text = (root / "Theorems" / h / "attempts" / a / "Attempt.lean").read_text()
+        self.assertEqual(
+            arginf._attempt_code((child / "Attempt.lean").read_text()),
+            arginf._attempt_code(parent_text),
+        )
+
+    def test_attempt_hash_covers_content_and_parent(self) -> None:
+        self.assertNotEqual(
+            arginf.attempt_hash("by\n  simp", None), arginf.attempt_hash("by\n  simp", "0" * 12)
+        )
+        self.assertEqual(
+            arginf.attempt_hash("by  simp -- c", None), arginf.attempt_hash("by simp", None)
+        )
+
+    def test_editing_a_merged_attempt_breaks_its_hash(self) -> None:
+        root, h = self._setup()
+        a = arginf.start_attempt(root, h, parent=None, note="x")
+        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+        f.write_text(f.read_text().replace("sorry", "simp"))
+        self.assertTrue(any("hash" in e for e in arginf.check_attempt(f.parent)))
+
+    def test_rehash_after_editing_a_new_attempt(self) -> None:
+        root, h = self._setup()
+        a = arginf.start_attempt(root, h, parent=None, note="x")
+        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+        f.write_text(f.read_text().replace("sorry", "simp"))
+        new = arginf.seal_attempt(f.parent)
+        self.assertNotEqual(new, a)
+        folder = root / "Theorems" / h / "attempts" / new
+        self.assertEqual(arginf.check_attempt(folder), [])
+        self.assertTrue(arginf.attempt_info(folder)["complete"])
+
+    def test_scope_allows_one_new_attempt(self) -> None:
+        h, a = "0123456789ab", "ba9876543210"
+        ok = arginf.check_scope(
+            [f"Theorems/{h}/attempts/{a}/Attempt.lean", f"Theorems/{h}/attempts/{a}/attempt.toml"],
+            f"{h}/{a}",
+        )
+        self.assertEqual(ok, [])
+        two = arginf.check_scope(
+            [f"Theorems/{h}/attempts/{a}/Attempt.lean", f"Theorems/{h}/attempts/{h}/Attempt.lean"],
+            f"{h}/{a}",
+        )
+        self.assertTrue(two)
+
+    def test_index_lists_attempt_tree(self) -> None:
+        root, h = self._setup()
+        a = arginf.start_attempt(root, h, parent=None, note="first")
+        b = arginf.start_attempt(root, h, parent=a, note="second")
+        entry = arginf.build_index(root)["theorems"][0]
+        tree = {x["hash"]: x for x in entry["attempts"]}
+        self.assertEqual(tree[b]["parent"], a)
+        self.assertEqual(tree[a]["children"], [b])
+        self.assertEqual(entry["status"], "open")
+
+
+class PromoteTests(unittest.TestCase):
+    def test_promote_complete_attempt_writes_proof(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "Theorems").mkdir()
+        h = arginf.new_theorem(root, "T", "True", kind="theorem")
+        a = arginf.start_attempt(root, h, parent=None, note="")
+        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+        f.write_text(f.read_text().replace("sorry", "trivial"))
+        a = arginf.seal_attempt(f.parent)
+        arginf.promote(root, h, a)
+        proof = (root / "Theorems" / h / "Proof.lean").read_text()
+        self.assertIn(f"import Theorems.«{h}».attempts.«{a}».Attempt", proof)
+        self.assertIn(f"theorem proof : statement := Attempt_{a}.proof", proof)
+        self.assertEqual(arginf.build_index(root)["theorems"][0]["status"], "proved")
+
+    def test_promote_refuses_partial_attempt(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "Theorems").mkdir()
+        h = arginf.new_theorem(root, "T", "True", kind="theorem")
+        a = arginf.start_attempt(root, h, parent=None, note="")
+        with self.assertRaises(arginf.ToolError):
+            arginf.promote(root, h, a)
+
+    def test_attempt_audit_source(self) -> None:
+        src = arginf.audit_source("0123456789ab", "ba9876543210")
+        self.assertIn("import Theorems.«0123456789ab».attempts.«ba9876543210».Attempt", src)
+        self.assertIn(
+            "example : Theorems.«0123456789ab».statement := "
+            "Theorems.«0123456789ab».Attempt_ba9876543210.proof",
+            src,
+        )
+
+
+class FolderWithAttemptsTests(unittest.TestCase):
+    def test_attempts_dir_is_allowed(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "Theorems").mkdir()
+        h = arginf.new_theorem(root, "T", "True", kind="theorem")
+        arginf.start_attempt(root, h, parent=None, note="")
+        self.assertEqual(arginf.check_folder(root / "Theorems" / h), [])

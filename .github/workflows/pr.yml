@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       hash: ${{ steps.scope.outputs.hash }}
+      attempt: ${{ steps.scope.outputs.attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,6 +41,8 @@ jobs:
           fi
           python3 tools/arginf.py check --base "$BASE_SHA" --branch "$HEAD_REF"
           echo "hash=${HEAD_REF%%/*}" >> "$GITHUB_OUTPUT"
+          ATTEMPT=$(git diff --name-only "$BASE_SHA...HEAD" | sed -nE 's#^Theorems/[0-9a-f]{12}/attempts/([0-9a-f]{12})/.*#\1#p' | sort -u | head -1)
+          echo "attempt=$ATTEMPT" >> "$GITHUB_OUTPUT"
   lean:
     needs: scope
     runs-on: ubuntu-latest
@@ -57,7 +60,14 @@ jobs:
       - name: Proof matches statement, allowed axioms only
         env:
           HASH: ${{ needs.scope.outputs.hash }}
+          ATTEMPT: ${{ needs.scope.outputs.attempt }}
         run: |
+          # Partial attempts (with sorry) may merge as checkpoints; only complete ones are audited
+          # here, and only Proof.lean makes a theorem verified.
           if [ -z "$HASH" ]; then python3 tools/arginf.py audit
           elif [ -f "Theorems/$HASH/Proof.lean" ]; then python3 tools/arginf.py audit "$HASH"
-          else echo "statement only: build passed"; fi
+          fi
+          if [ -n "$ATTEMPT" ] && ! grep -qw sorry "Theorems/$HASH/attempts/$ATTEMPT/Attempt.lean"; then
+            python3 tools/arginf.py audit "$HASH" --attempt "$ATTEMPT"
+          fi
+          echo "checks passed"

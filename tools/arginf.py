@@ -28,6 +28,9 @@ ROOT_DIR = "Theorems"
 HASH_LEN = 12
 HASH_RE = re.compile(rf"^[0-9a-f]{{{HASH_LEN}}}$")
 ALLOWED_FILES = frozenset({"Statement.lean", "Proof.lean", "meta.toml", "README.md"})
+ATTEMPT_DIR = "attempts"
+ATTEMPT_FILES = frozenset({"Attempt.lean", "attempt.toml"})
+NOTE_MAX = 500
 KINDS = ("theorem", "lemma", "open-question")
 TITLE_MAX = 200
 DESCRIPTION_MAX = 5000
@@ -37,6 +40,9 @@ _COMMAND_RE = re.compile(
     r"example|structure|class|inductive|noncomputable|private|protected|@\[|#|import|set_option)\b"
 )
 _IMPORT_RE = re.compile(r"(?m)^import\s+Theorems\.«([0-9a-f]+)»\.(?:Proof|Statement)\s*$")
+_ATTEMPT_IMPORT_RE = re.compile(
+    r"(?m)^import\s+Theorems\.«([0-9a-f]+)»\.attempts\.«([0-9a-f]+)»\.Attempt\s*$"
+)
 
 
 class ToolError(Exception):
@@ -100,27 +106,38 @@ def statement_hash(text: str) -> str:
 
 
 def check_scope(changed: list[str], branch: str) -> list[str]:
+    """A PR touches one theorem folder and at most one attempt inside it."""
     errors: list[str] = []
     folders: set[str] = set()
+    attempts: set[str] = set()
     for raw in changed:
         p = PurePosixPath(raw)
         parts = p.parts
         if ".." in parts or p.is_absolute():
             errors.append(f"{raw}: path tricks are not allowed")
             continue
-        if len(parts) != 3 or parts[0] != ROOT_DIR or not HASH_RE.match(parts[1]):
+        if len(parts) < 3 or parts[0] != ROOT_DIR or not HASH_RE.match(parts[1]):
             errors.append(f"{raw}: outside a {ROOT_DIR}/<hash>/ folder")
             continue
-        if parts[2] not in ALLOWED_FILES:
-            errors.append(f"{raw}: only {', '.join(sorted(ALLOWED_FILES))} are allowed")
         folders.add(parts[1])
+        if len(parts) == 3:
+            if parts[2] not in ALLOWED_FILES:
+                errors.append(f"{raw}: only {', '.join(sorted(ALLOWED_FILES))} are allowed")
+        elif len(parts) == 5 and parts[2] == ATTEMPT_DIR and HASH_RE.match(parts[3]):
+            attempts.add(parts[3])
+            if parts[4] not in ATTEMPT_FILES:
+                errors.append(f"{raw}: only {', '.join(sorted(ATTEMPT_FILES))} are allowed")
+        else:
+            errors.append(f"{raw}: not an allowed file in {ROOT_DIR}/<hash>/")
     if len(folders) > 1:
         errors.append(f"a PR may change one folder only, found {sorted(folders)}")
+    if len(attempts) > 1:
+        errors.append(f"a PR may add one attempt only, found {sorted(attempts)}")
     if len(folders) == 1:
         (h,) = folders
         if not branch.startswith(f"{h}/"):
             errors.append(f"branch must start with '{h}/' (got '{branch}')")
-    elif not errors and not changed:
+    elif not changed:
         errors.append("no changes")
     if not folders and changed and not any("branch" in e for e in errors):
         errors.append("branch must start with '<hash>/' of the folder it changes")
@@ -201,9 +218,163 @@ def check_folder(folder: Path) -> list[str]:
     _, meta_errors = Meta.load(folder / "meta.toml")
     errors += meta_errors
     for f in folder.iterdir():
+        if f.name == ATTEMPT_DIR and f.is_dir():
+            continue
         if f.name not in ALLOWED_FILES:
             errors.append(f"{f}: only {', '.join(sorted(ALLOWED_FILES))} are allowed")
     return errors
+
+
+# Attempts ("lines"): content-addressed, possibly partial, forming a tree -------
+
+_NS_LINE_RE = re.compile(r"(?m)^\s*(?:namespace|end)\b.*$")
+_SORRY_RE = re.compile(r"\bsorry\b")
+
+
+def _attempt_body(text: str) -> str:
+    """Attempt.lean without comments and namespace/end boilerplate, whitespace-normalized."""
+    return " ".join(_NS_LINE_RE.sub("", strip_comments(text)).split())
+
+
+def attempt_hash(text: str, parent: str | None) -> str:
+    material = f"parent:{parent or ''}\n{_attempt_body(text)}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:HASH_LEN]
+
+
+def _attempt_ns(h: str, a: str) -> str:
+    return f"{ROOT_DIR}.«{h}».Attempt_{a}"
+
+
+def _read_attempt_meta(folder: Path) -> tuple[str | None, str, list[str]]:
+    try:
+        raw: dict[str, Any] = tomllib.loads((folder / "attempt.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as err:
+        return None, "", [f"{folder}/attempt.toml: {err}"]
+    errors: list[str] = []
+    parent, note = raw.get("parent", ""), raw.get("note", "")
+    if not isinstance(parent, str) or (parent and not HASH_RE.match(parent)):
+        errors.append(f"{folder}/attempt.toml: parent must be empty or a hash")
+    if not isinstance(note, str) or len(note) > NOTE_MAX:
+        errors.append(f"{folder}/attempt.toml: note must be a string up to {NOTE_MAX} chars")
+    if set(raw) - {"parent", "note"}:
+        errors.append(
+            f"{folder}/attempt.toml: unknown keys {sorted(set(raw) - {'parent', 'note'})}"
+        )
+    return (str(parent) or None) if isinstance(parent, str) else None, str(note), errors
+
+
+def _write_attempt(folder: Path, h: str, a: str, code: str, parent: str | None, note: str) -> None:
+    ns = _attempt_ns(h, a)
+    folder.mkdir(parents=True)
+    (folder / "Attempt.lean").write_text(
+        f"import {ROOT_DIR}.«{h}».Statement\n\nnamespace {ns}\n\n{code.strip()}\n\nend {ns}\n",
+        encoding="utf-8",
+    )
+    (folder / "attempt.toml").write_text(
+        f"parent = {_toml_str(parent or '')}\nnote = {_toml_str(note)}\n", encoding="utf-8"
+    )
+
+
+def _attempt_code(text: str) -> str:
+    """The code between the namespace lines (what a continuation copies)."""
+    lines = [ln for ln in text.splitlines() if not _NS_LINE_RE.match(ln)]
+    return "\n".join(ln for ln in lines if not ln.startswith("import ")).strip()
+
+
+def start_attempt(root: Path, h: str, parent: str | None, note: str) -> str:
+    base = root / ROOT_DIR / h
+    if not (base / "Statement.lean").is_file():
+        raise ToolError(f"no statement {h}")
+    if parent:
+        ptext = (base / ATTEMPT_DIR / parent / "Attempt.lean").read_text(encoding="utf-8")
+        imports = [ln for ln in ptext.splitlines() if ln.startswith("import ")]
+        code = "\n".join(imports[1:] + ["", _attempt_code(ptext)]).strip()
+    else:
+        code = f"theorem proof : {ROOT_DIR}.«{h}».statement := by\n  sorry"
+    a = attempt_hash(code, parent)
+    folder = base / ATTEMPT_DIR / a
+    if folder.exists():
+        raise ToolError(f"attempt {a} already exists")
+    _write_attempt(folder, h, a, code, parent, note)
+    return a
+
+
+def seal_attempt(folder: Path) -> str:
+    """Re-hash an attempt after editing it, renaming its folder and namespace."""
+    h = folder.parent.parent.name
+    parent, note, errors = _read_attempt_meta(folder)
+    if errors:
+        raise ToolError("; ".join(errors))
+    text = (folder / "Attempt.lean").read_text(encoding="utf-8")
+    extra_imports = [
+        ln for ln in text.splitlines() if ln.startswith("import ") and "Statement" not in ln
+    ]
+    code = "\n".join(extra_imports + ["", _attempt_code(text)]).strip()
+    a = attempt_hash(code, parent)
+    if a == folder.name:
+        return a
+    target = folder.parent / a
+    if target.exists():
+        raise ToolError(f"attempt {a} already exists")
+    _write_attempt(target, h, a, code, parent, note)
+    for f in folder.iterdir():
+        f.unlink()
+    folder.rmdir()
+    return a
+
+
+def check_attempt(folder: Path) -> list[str]:
+    errors: list[str] = []
+    parent, _, meta_errors = _read_attempt_meta(folder)
+    errors += meta_errors
+    f = folder / "Attempt.lean"
+    if not f.is_file():
+        return errors + [f"{folder}: missing Attempt.lean"]
+    text = f.read_text(encoding="utf-8")
+    extra = [ln for ln in text.splitlines() if ln.startswith("import ") and "Statement" not in ln]
+    code = "\n".join(extra + ["", _attempt_code(text)]).strip()
+    if attempt_hash(code, parent) != folder.name:
+        errors.append(f"{folder}: folder name does not match attempt hash (run `arginf.py seal`)")
+    if parent and not (folder.parent / parent).is_dir():
+        errors.append(f"{folder}: parent attempt {parent} not found")
+    for g in folder.iterdir():
+        if g.name not in ATTEMPT_FILES:
+            errors.append(f"{g}: only {', '.join(sorted(ATTEMPT_FILES))} are allowed")
+    return errors
+
+
+def attempt_info(folder: Path) -> dict[str, Any]:
+    parent, note, _ = _read_attempt_meta(folder)
+    code = strip_comments((folder / "Attempt.lean").read_text(encoding="utf-8"))
+    goals = len(_SORRY_RE.findall(code))
+    return {
+        "hash": folder.name,
+        "parent": parent,
+        "note": note,
+        "openGoals": goals,
+        "complete": goals == 0,
+        "children": [],
+    }
+
+
+def promote(root: Path, h: str, a: str) -> None:
+    """Make a complete attempt the theorem's Proof.lean."""
+    folder = root / ROOT_DIR / h / ATTEMPT_DIR / a
+    errors = check_attempt(folder)
+    if errors:
+        raise ToolError("; ".join(errors))
+    if not attempt_info(folder)["complete"]:
+        raise ToolError(f"attempt {a} still has open goals (sorry)")
+    proof = root / ROOT_DIR / h / "Proof.lean"
+    if proof.exists():
+        raise ToolError(f"{proof} already exists: this theorem is already proved")
+    proof.write_text(
+        f"import {ROOT_DIR}.«{h}».{ATTEMPT_DIR}.«{a}».Attempt\n\n"
+        f"namespace {ROOT_DIR}.«{h}»\n\n"
+        f"theorem proof : statement := Attempt_{a}.proof\n\n"
+        f"end {ROOT_DIR}.«{h}»\n",
+        encoding="utf-8",
+    )
 
 
 # Axiom audit (CI runs this after `lake build`) ---------------------------------
@@ -212,14 +383,17 @@ ALLOWED_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 _AXIOMS_RE = re.compile(r"depends on axioms: \[(.*?)\]", re.S)
 
 
-def audit_source(h: str) -> str:
-    """A Lean file that fails unless `proof` proves exactly `statement`, then lists axioms."""
+def audit_source(h: str, attempt: str | None = None) -> str:
+    """A Lean file that fails unless the proof proves exactly `statement`, then lists axioms."""
     ns = f"{ROOT_DIR}.«{h}»"
-    return (
-        f"import {ns}.Proof\n"
-        f"example : {ns}.statement := {ns}.proof\n"
-        f"#print axioms {ns}.proof\n"
-    )
+    if attempt:
+        module, proof = (
+            f"{ns}.{ATTEMPT_DIR}.«{attempt}».Attempt",
+            f"{_attempt_ns(h, attempt)}.proof",
+        )
+    else:
+        module, proof = f"{ns}.Proof", f"{ns}.proof"
+    return f"import {module}\nexample : {ns}.statement := {proof}\n#print axioms {proof}\n"
 
 
 def parse_axioms(output: str) -> list[str]:
@@ -235,12 +409,12 @@ def forbidden_axioms(axioms: list[str]) -> list[str]:
     return [a for a in axioms if a not in ALLOWED_AXIOMS]
 
 
-def audit(root: Path, h: str) -> list[str]:
-    if not HASH_RE.match(h):
-        return [f"bad hash {h!r}"]
-    src = root / ".lake" / f"Audit_{h}.lean"
+def audit(root: Path, h: str, attempt: str | None = None) -> list[str]:
+    if not HASH_RE.match(h) or (attempt is not None and not HASH_RE.match(attempt)):
+        return [f"bad hash {h!r}/{attempt!r}"]
+    src = root / ".lake" / f"Audit_{h}_{attempt or 'proof'}.lean"
     src.parent.mkdir(exist_ok=True)
-    src.write_text(audit_source(h), encoding="utf-8")
+    src.write_text(audit_source(h, attempt), encoding="utf-8")
     run = subprocess.run(
         ["lake", "env", "lean", str(src)], cwd=root, capture_output=True, text=True, timeout=1800
     )
@@ -254,6 +428,21 @@ def audit(root: Path, h: str) -> list[str]:
 # Index (rendered by arginf.com) ------------------------------------------------
 
 
+def _attempt_tree(folder: Path) -> list[dict[str, Any]]:
+    adir = folder / ATTEMPT_DIR
+    if not adir.is_dir():
+        return []
+    nodes = {
+        p.name: attempt_info(p)
+        for p in sorted(adir.iterdir())
+        if p.is_dir() and HASH_RE.match(p.name)
+    }
+    for n in nodes.values():
+        if n["parent"] in nodes:
+            nodes[n["parent"]]["children"].append(n["hash"])
+    return list(nodes.values())
+
+
 def build_index(root: Path) -> dict[str, Any]:
     entries: dict[str, dict[str, Any]] = {}
     base = root / ROOT_DIR
@@ -262,6 +451,10 @@ def build_index(root: Path) -> dict[str, Any]:
         stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
         proof = folder / "Proof.lean"
         proof_text = proof.read_text(encoding="utf-8") if proof.is_file() else ""
+        for ah, aa in _ATTEMPT_IMPORT_RE.findall(proof_text):
+            att = root / ROOT_DIR / ah / ATTEMPT_DIR / aa / "Attempt.lean"
+            if ah == folder.name and att.is_file():
+                proof_text += "\n" + att.read_text(encoding="utf-8")
         deps = sorted(
             {d for d in _IMPORT_RE.findall(stmt_text + "\n" + proof_text) if d != folder.name}
         )
@@ -278,6 +471,7 @@ def build_index(root: Path) -> dict[str, Any]:
             "dependencies": deps,
             "dependents": [],
             "valid": not errors,
+            "attempts": _attempt_tree(folder),
         }
     for h, e in entries.items():
         for d in e["dependencies"]:
@@ -309,8 +503,18 @@ def main(argv: list[str] | None = None) -> int:
     p_check.add_argument("--base", default="origin/main")
     p_check.add_argument("--branch", default=None)
     sub.add_parser("index", help="print index.json for the site")
+    p_att = sub.add_parser("attempt", help="start a new attempt, optionally continuing another")
+    p_att.add_argument("theorem")
+    p_att.add_argument("--from", dest="parent", default=None, help="attempt hash to continue")
+    p_att.add_argument("--note", default="")
+    p_seal = sub.add_parser("seal", help="re-hash an edited attempt folder")
+    p_seal.add_argument("folder", type=Path)
+    p_prom = sub.add_parser("promote", help="make a complete attempt the theorem's proof")
+    p_prom.add_argument("theorem")
+    p_prom.add_argument("attempt")
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
     p_audit.add_argument("hashes", nargs="*", help="default: every folder with a Proof.lean")
+    p_audit.add_argument("--attempt", default=None, help="audit this complete attempt instead")
     args = parser.parse_args(argv)
     root = Path.cwd()
     try:
@@ -324,19 +528,39 @@ def main(argv: list[str] | None = None) -> int:
             branch = args.branch or _git("rev-parse", "--abbrev-ref", "HEAD").strip()
             changed = _git("diff", "--name-only", f"{args.base}...HEAD").split()
             errors = check_scope(changed, branch)
-            for h in {PurePosixPath(c).parts[1] for c in changed if c.startswith(f"{ROOT_DIR}/")}:
-                if HASH_RE.match(h) and (root / ROOT_DIR / h).is_dir():
-                    errors += check_folder(root / ROOT_DIR / h)
+            for c in changed:
+                parts = PurePosixPath(c).parts
+                if len(parts) >= 3 and parts[0] == ROOT_DIR and HASH_RE.match(parts[1]):
+                    if (root / ROOT_DIR / parts[1]).is_dir():
+                        errors += check_folder(root / ROOT_DIR / parts[1])
+                    if len(parts) == 5 and parts[2] == ATTEMPT_DIR:
+                        att = root / ROOT_DIR / parts[1] / ATTEMPT_DIR / parts[3]
+                        if att.is_dir():
+                            errors += check_attempt(att)
+            errors = list(dict.fromkeys(errors))
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)
             if errors:
                 return 1
             print("ok")
+        elif args.cmd == "attempt":
+            a = start_attempt(root, args.theorem, args.parent, args.note)
+            print(a)
+            print(
+                f"next: edit {ROOT_DIR}/{args.theorem}/{ATTEMPT_DIR}/{a}/Attempt.lean, then "
+                f"`arginf.py seal` it",
+                file=sys.stderr,
+            )
+        elif args.cmd == "seal":
+            print(seal_attempt(args.folder))
+        elif args.cmd == "promote":
+            promote(root, args.theorem, args.attempt)
+            print(f"wrote {ROOT_DIR}/{args.theorem}/Proof.lean")
         elif args.cmd == "audit":
             hashes = args.hashes or sorted(
                 p.parent.name for p in (root / ROOT_DIR).glob("*/Proof.lean")
             )
-            errors = [e for h in hashes for e in audit(root, h)]
+            errors = [e for h in hashes for e in audit(root, h, args.attempt)]
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)
             if errors:
