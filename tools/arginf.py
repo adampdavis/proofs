@@ -2,7 +2,7 @@
 """arginf contributor tool (Python 3.11+, standard library only).
 
     python3 tools/arginf.py hash Theorems/<hash>/Statement.lean
-    python3 tools/arginf.py new --title "..." --kind lemma "<Lean Prop>"
+    python3 tools/arginf.py new [--import Mathlib] "<Lean Prop>"
     python3 tools/arginf.py check [--base origin/main]   # same checks as CI
     python3 tools/arginf.py index > index.json
 
@@ -18,23 +18,23 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT_DIR = "Theorems"
 HASH_LEN = 12
 HASH_RE = re.compile(rf"^[0-9a-f]{{{HASH_LEN}}}$")
-ALLOWED_FILES = frozenset({"Statement.lean", "Proof.lean", "meta.toml", "README.md"})
+# Theorem folders hold Lean only: no prose, no comments, no string literals. The statement is
+# the statement. Curation (featured, examples) lives in CURATION_FILE, owned by maintainers.
+ALLOWED_FILES = frozenset({"Statement.lean", "Proof.lean"})
 ATTEMPT_DIR = "attempts"
 ATTEMPT_FILES = frozenset({"Attempt.lean", "attempt.toml"})
-NOTE_MAX = 500
-KINDS = ("theorem", "lemma", "open-question")
-TITLE_MAX = 200
-DESCRIPTION_MAX = 5000
+CURATION_FILE = "curation.toml"
+CURATION_KEYS = ("featured", "examples")
 _STATEMENT_RE = re.compile(r"(?m)^def\s+statement\s*:\s*Prop\s*:=")
 _COMMAND_RE = re.compile(
     r"(?m)^(?:end|theorem|lemma|def|abbrev|namespace|section|open|variable|instance|"
@@ -148,73 +148,37 @@ def check_scope(changed: list[str], branch: str) -> list[str]:
 # Folders ---------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class Meta:
-    title: str
-    kind: str
-    description: str
-    tags: tuple[str, ...]
-
-    @classmethod
-    def load(cls, path: Path) -> tuple[Meta | None, list[str]]:
-        try:
-            raw: dict[str, Any] = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as err:
-            return None, [f"{path}: {err}"]
-        errors: list[str] = []
-        title, kind = raw.get("title"), raw.get("kind")
-        desc, tags = raw.get("description", ""), raw.get("tags", [])
-        if not isinstance(title, str) or not title.strip() or len(title) > TITLE_MAX:
-            errors.append(f"{path}: title must be 1-{TITLE_MAX} characters")
-        if kind not in KINDS:
-            errors.append(f"{path}: kind must be one of {', '.join(KINDS)}")
-        if not isinstance(desc, str) or len(desc) > DESCRIPTION_MAX:
-            errors.append(f"{path}: description must be a string up to {DESCRIPTION_MAX} chars")
-        if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
-            errors.append(f"{path}: tags must be a list of strings")
-        unknown = set(raw) - {"title", "kind", "description", "tags"}
-        if unknown:
-            errors.append(f"{path}: unknown keys {sorted(unknown)}")
-        if errors:
-            return None, errors
-        return cls(str(title), str(kind), str(desc), tuple(tags)), []
+def prose_errors(path: Path | str, text: str) -> list[str]:
+    """Lean files in theorem folders may not carry natural language."""
+    errors: list[str] = []
+    try:
+        if strip_comments(text) != text:
+            errors.append(f"{path}: comments are not allowed (statements are the statements)")
+    except ToolError as err:
+        errors.append(f"{path}: {err}")
+    if '"' in text:
+        errors.append(f"{path}: string literals are not allowed")
+    return errors
 
 
-def _toml_str(s: str) -> str:
-    return json.dumps(s, ensure_ascii=False)
-
-
-def new_theorem(
-    root: Path,
-    title: str,
-    prop: str,
-    kind: str,
-    description: str = "",
-    imports: tuple[str, ...] = ("Mathlib",),
-    tags: tuple[str, ...] = (),
-) -> str:
-    if kind not in KINDS:
-        raise ToolError(f"kind must be one of {', '.join(KINDS)}")
+def new_theorem(root: Path, prop: str, imports: tuple[str, ...] = ("Mathlib",)) -> str:
     body = f"def statement : Prop :=\n  {prop.strip()}\n"
     h = statement_hash(body)
     folder = root / ROOT_DIR / h
     if folder.exists():
         raise ToolError(f"{folder} already exists: this statement is already in the repo")
-    folder.mkdir(parents=True)
     for imp in imports:
         if not re.fullmatch(r"[A-Za-z_][\w.«»]*", imp):
             raise ToolError(f"bad import {imp!r}")
-    header = "".join(f"import {imp}\n" for imp in imports)
-    (folder / "Statement.lean").write_text(
-        f"{header}\nnamespace {ROOT_DIR}.«{h}»\n\n{body}\nend {ROOT_DIR}.«{h}»\n",
-        encoding="utf-8",
+    text = (
+        "".join(f"import {imp}\n" for imp in imports)
+        + f"\nnamespace {ROOT_DIR}.«{h}»\n\n{body}\nend {ROOT_DIR}.«{h}»\n"
     )
-    tag_list = ", ".join(_toml_str(t) for t in tags)
-    (folder / "meta.toml").write_text(
-        f"title = {_toml_str(title)}\nkind = {_toml_str(kind)}\n"
-        f"description = {_toml_str(description)}\ntags = [{tag_list}]\n",
-        encoding="utf-8",
-    )
+    errors = prose_errors("Statement.lean", text)
+    if errors:
+        raise ToolError("; ".join(errors))
+    folder.mkdir(parents=True)
+    (folder / "Statement.lean").write_text(text, encoding="utf-8")
     return h
 
 
@@ -229,14 +193,41 @@ def check_folder(folder: Path) -> list[str]:
             errors.append(f"{folder}: folder name does not match statement hash {h}")
     except ToolError as err:
         errors.append(f"{stmt}: {err}")
-    _, meta_errors = Meta.load(folder / "meta.toml")
-    errors += meta_errors
     for f in folder.iterdir():
         if f.name == ATTEMPT_DIR and f.is_dir():
             continue
         if f.name not in ALLOWED_FILES:
             errors.append(f"{f}: only {', '.join(sorted(ALLOWED_FILES))} are allowed")
+        elif f.suffix == ".lean":
+            errors += prose_errors(f, f.read_text(encoding="utf-8"))
     return errors
+
+
+def load_curation(root: Path) -> tuple[dict[str, list[str]], list[str]]:
+    """Maintainer-owned lists of hashes: which statements are featured or worked examples."""
+    path = root / CURATION_FILE
+    empty: dict[str, list[str]] = {k: [] for k in CURATION_KEYS}
+    if not path.is_file():
+        return empty, []
+    try:
+        raw: dict[str, Any] = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as err:
+        return empty, [f"{CURATION_FILE}: {err}"]
+    errors: list[str] = []
+    out = dict(empty)
+    for key, value in raw.items():
+        if key not in CURATION_KEYS:
+            errors.append(f"{CURATION_FILE}: unknown key {key!r}")
+        elif not isinstance(value, list) or not all(
+            isinstance(v, str) and HASH_RE.match(v) for v in value
+        ):
+            errors.append(f"{CURATION_FILE}: {key} must be a list of statement hashes")
+        else:
+            missing = [v for v in value if not (root / ROOT_DIR / v).is_dir()]
+            if missing:
+                errors.append(f"{CURATION_FILE}: {key} lists unknown statements {missing}")
+            out[key] = list(value)
+    return out, errors
 
 
 # Attempts ("lines"): content-addressed, possibly partial, forming a tree -------
@@ -259,34 +250,29 @@ def _attempt_ns(h: str, a: str) -> str:
     return f"{ROOT_DIR}.«{h}».Attempt_{a}"
 
 
-def _read_attempt_meta(folder: Path) -> tuple[str | None, str, list[str]]:
+def _read_attempt_meta(folder: Path) -> tuple[str | None, list[str]]:
     try:
         raw: dict[str, Any] = tomllib.loads((folder / "attempt.toml").read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as err:
-        return None, "", [f"{folder}/attempt.toml: {err}"]
+        return None, [f"{folder}/attempt.toml: {err}"]
     errors: list[str] = []
-    parent, note = raw.get("parent", ""), raw.get("note", "")
+    parent = raw.get("parent", "")
     if not isinstance(parent, str) or (parent and not HASH_RE.match(parent)):
         errors.append(f"{folder}/attempt.toml: parent must be empty or a hash")
-    if not isinstance(note, str) or len(note) > NOTE_MAX:
-        errors.append(f"{folder}/attempt.toml: note must be a string up to {NOTE_MAX} chars")
-    if set(raw) - {"parent", "note"}:
-        errors.append(
-            f"{folder}/attempt.toml: unknown keys {sorted(set(raw) - {'parent', 'note'})}"
-        )
-    return (str(parent) or None) if isinstance(parent, str) else None, str(note), errors
+        parent = ""
+    if set(raw) - {"parent"}:
+        errors.append(f"{folder}/attempt.toml: only `parent` is allowed")
+    return (parent or None), errors
 
 
-def _write_attempt(folder: Path, h: str, a: str, code: str, parent: str | None, note: str) -> None:
+def _write_attempt(folder: Path, h: str, a: str, code: str, parent: str | None) -> None:
     ns = _attempt_ns(h, a)
     folder.mkdir(parents=True)
     (folder / "Attempt.lean").write_text(
         f"import {ROOT_DIR}.«{h}».Statement\n\nnamespace {ns}\n\n{code.strip()}\n\nend {ns}\n",
         encoding="utf-8",
     )
-    (folder / "attempt.toml").write_text(
-        f"parent = {_toml_str(parent or '')}\nnote = {_toml_str(note)}\n", encoding="utf-8"
-    )
+    (folder / "attempt.toml").write_text(f'parent = "{parent or ""}"\n', encoding="utf-8")
 
 
 def _attempt_code(text: str) -> str:
@@ -295,7 +281,7 @@ def _attempt_code(text: str) -> str:
     return "\n".join(ln for ln in lines if not ln.startswith("import ")).strip()
 
 
-def start_attempt(root: Path, h: str, parent: str | None, note: str) -> str:
+def start_attempt(root: Path, h: str, parent: str | None) -> str:
     base = root / ROOT_DIR / h
     if not (base / "Statement.lean").is_file():
         raise ToolError(f"no statement {h}")
@@ -306,17 +292,17 @@ def start_attempt(root: Path, h: str, parent: str | None, note: str) -> str:
     else:
         code = f"theorem proof : {ROOT_DIR}.«{h}».statement := by\n  sorry"
     a = attempt_hash(code, parent)
-    folder = base / ATTEMPT_DIR / a
-    if folder.exists():
-        raise ToolError(f"attempt {a} already exists")
-    _write_attempt(folder, h, a, code, parent, note)
+    if (base / ATTEMPT_DIR / a).exists():
+        # Identical starting point already exists: work in a draft until it is sealed.
+        a = f"draft_{secrets.token_hex(4)}"
+    _write_attempt(base / ATTEMPT_DIR / a, h, a, code, parent)
     return a
 
 
 def seal_attempt(folder: Path) -> str:
     """Re-hash an attempt after editing it, renaming its folder and namespace."""
     h = folder.parent.parent.name
-    parent, note, errors = _read_attempt_meta(folder)
+    parent, errors = _read_attempt_meta(folder)
     if errors:
         raise ToolError("; ".join(errors))
     text = (folder / "Attempt.lean").read_text(encoding="utf-8")
@@ -330,7 +316,7 @@ def seal_attempt(folder: Path) -> str:
     target = folder.parent / a
     if target.exists():
         raise ToolError(f"attempt {a} already exists")
-    _write_attempt(target, h, a, code, parent, note)
+    _write_attempt(target, h, a, code, parent)
     for f in folder.iterdir():
         f.unlink()
     folder.rmdir()
@@ -339,12 +325,13 @@ def seal_attempt(folder: Path) -> str:
 
 def check_attempt(folder: Path) -> list[str]:
     errors: list[str] = []
-    parent, _, meta_errors = _read_attempt_meta(folder)
+    parent, meta_errors = _read_attempt_meta(folder)
     errors += meta_errors
     f = folder / "Attempt.lean"
     if not f.is_file():
         return errors + [f"{folder}: missing Attempt.lean"]
     text = f.read_text(encoding="utf-8")
+    errors += prose_errors(f, text)
     extra = [ln for ln in text.splitlines() if ln.startswith("import ") and "Statement" not in ln]
     code = "\n".join(extra + ["", _attempt_code(text)]).strip()
     if attempt_hash(code, parent) != folder.name:
@@ -358,13 +345,12 @@ def check_attempt(folder: Path) -> list[str]:
 
 
 def attempt_info(folder: Path) -> dict[str, Any]:
-    parent, note, _ = _read_attempt_meta(folder)
+    parent, _ = _read_attempt_meta(folder)
     code = strip_comments((folder / "Attempt.lean").read_text(encoding="utf-8"))
     goals = len(_SORRY_RE.findall(code))
     return {
         "hash": folder.name,
         "parent": parent,
-        "note": note,
         "openGoals": goals,
         "complete": goals == 0,
         "children": [],
@@ -552,10 +538,11 @@ def _attempt_tree(folder: Path) -> list[dict[str, Any]]:
 
 
 def build_index(root: Path) -> dict[str, Any]:
+    curation, _ = load_curation(root)
     entries: dict[str, dict[str, Any]] = {}
     base = root / ROOT_DIR
     for folder in sorted(p for p in base.iterdir() if p.is_dir() and HASH_RE.match(p.name)):
-        meta, errors = Meta.load(folder / "meta.toml")
+        errors = check_folder(folder)
         stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
         proof = folder / "Proof.lean"
         proof_text = proof.read_text(encoding="utf-8") if proof.is_file() else ""
@@ -568,17 +555,15 @@ def build_index(root: Path) -> dict[str, Any]:
         )
         entries[folder.name] = {
             "hash": folder.name,
-            "title": meta.title if meta else folder.name,
-            "kind": meta.kind if meta else "theorem",
-            "description": meta.description if meta else "",
-            "tags": list(meta.tags) if meta else [],
             "statement": extract_statement(stmt_text),
             "statementLean": stmt_text,
             "proofLean": proof_text or None,
-            "status": "proved" if proof_text else "open",
+            "status": "proved" if proof.is_file() else "open",
             "dependencies": deps,
             "dependents": [],
             "valid": not errors,
+            "featured": folder.name in curation["featured"],
+            "example": folder.name in curation["examples"],
             "attempts": _attempt_tree(folder),
         }
     for h, e in entries.items():
@@ -587,7 +572,7 @@ def build_index(root: Path) -> dict[str, Any]:
                 entries[d]["dependents"].append(h)
     for e in entries.values():
         e["dependents"].sort()
-    return {"version": 1, "theorems": list(entries.values())}
+    return {"version": 2, "theorems": list(entries.values())}
 
 
 # CLI ---------------------------------------------------------------------------
@@ -603,12 +588,8 @@ def main(argv: list[str] | None = None) -> int:
     p_hash = sub.add_parser("hash", help="print the hash of a Statement.lean")
     p_hash.add_argument("file", type=Path)
     p_new = sub.add_parser("new", help="create Theorems/<hash>/ for a new statement")
-    p_new.add_argument("prop", help="the Lean Prop, e.g. '∀ n : ℕ, n + 0 = n'")
-    p_new.add_argument("--title", required=True)
-    p_new.add_argument("--kind", choices=KINDS, default="theorem")
-    p_new.add_argument("--description", default="")
+    p_new.add_argument("prop", help="the Lean Prop, e.g. '∀ n : Nat, n + 0 = n'")
     p_new.add_argument("--import", dest="imports", action="append", default=None)
-    p_new.add_argument("--tag", dest="tags", action="append", default=[])
     p_check = sub.add_parser("check", help="run the PR scope and folder checks locally")
     p_check.add_argument("--base", default="origin/main")
     p_check.add_argument("--branch", default=None)
@@ -616,7 +597,6 @@ def main(argv: list[str] | None = None) -> int:
     p_att = sub.add_parser("attempt", help="start a new attempt, optionally continuing another")
     p_att.add_argument("theorem")
     p_att.add_argument("--from", dest="parent", default=None, help="attempt hash to continue")
-    p_att.add_argument("--note", default="")
     p_seal = sub.add_parser("seal", help="re-hash an edited attempt folder")
     p_seal.add_argument("folder", type=Path)
     p_prom = sub.add_parser("promote", help="make a complete attempt the theorem's proof")
@@ -634,15 +614,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "hash":
             print(statement_hash(args.file.read_text(encoding="utf-8")))
         elif args.cmd == "new":
-            h = new_theorem(
-                root,
-                args.title,
-                args.prop,
-                args.kind,
-                args.description,
-                tuple(args.imports or ["Mathlib"]),
-                tuple(args.tags),
-            )
+            h = new_theorem(root, args.prop, tuple(args.imports or ["Mathlib"]))
             print(h)
             print(f"next: git switch -c {h}/statement && git add {ROOT_DIR}/{h}", file=sys.stderr)
         elif args.cmd == "check":
@@ -658,6 +630,8 @@ def main(argv: list[str] | None = None) -> int:
                         att = root / ROOT_DIR / parts[1] / ATTEMPT_DIR / parts[3]
                         if att.is_dir():
                             errors += check_attempt(att)
+            if any(c == CURATION_FILE for c in changed):
+                errors += load_curation(root)[1]
             errors = list(dict.fromkeys(errors))
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)
@@ -665,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print("ok")
         elif args.cmd == "attempt":
-            a = start_attempt(root, args.theorem, args.parent, args.note)
+            a = start_attempt(root, args.theorem, args.parent)
             print(a)
             print(
                 f"next: edit {ROOT_DIR}/{args.theorem}/{ATTEMPT_DIR}/{a}/Attempt.lean, then "

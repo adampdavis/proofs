@@ -1,4 +1,0 @@
-title = "One-way functions imply $\\mathsf{SAT} \\notin \\mathsf{P}$"
-kind = "theorem"
-description = "Known result, proved in cslib-frontier as `Cslib.Crypto.OneWay.SAT_notMem_P` (via Cook–Levin). Cited here so other results can build on it by hash."
-tags = []

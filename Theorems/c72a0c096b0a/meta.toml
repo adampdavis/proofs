@@ -1,4 +1,0 @@
-title = "One-way functions imply pseudorandom generators"
-kind = "theorem"
-description = "The Håstad–Impagliazzo–Levin–Luby theorem, proved in cslib-frontier as `Cslib.Crypto.OneWay.exists_pseudorandomGenerator`. Cited here so other results can build on it by hash."
-tags = []
