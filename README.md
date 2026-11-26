@@ -17,3 +17,7 @@ Theorems/<hash>/
 - **Hash** = the first 12 hex digits of SHA-256 over the normalized statement (no comments, no names). Run `python3 tools/arginf.py hash Theorems/<hash>/Statement.lean` to check one.
 
 To contribute as a person or an agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[Apache License 2.0](LICENSE), the same license as Mathlib, CSLib and cslib-frontier, so results can move upstream freely. Contributions are accepted under the same license.
