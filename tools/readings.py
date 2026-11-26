@@ -31,7 +31,7 @@ PROMPT = "Translate the following Lean statement into natural language:\n```\n{l
 TEMPLATES = ("chatml",)
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
-MAX_TOKENS = 256
+MAX_TOKENS = 512
 _SHA = re.compile(r"[0-9a-f]{64}")
 
 
@@ -111,7 +111,11 @@ def digest(text: str) -> str:
 
 
 def missing(hashes: list[str], existing: list[dict[str, Any]], model_sha: str) -> list[str]:
-    done = {r["hash"] for r in existing if r.get("modelSha256") == model_sha}
+    done = {
+        r["hash"]
+        for r in existing
+        if r.get("modelSha256") == model_sha and r.get("maxTokens") == MAX_TOKENS
+    }
     return [h for h in hashes if h not in done]
 
 
@@ -122,7 +126,7 @@ def merge(existing: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dic
     return sorted(key.values(), key=lambda r: (r["hash"], r["modelSha256"]))
 
 
-PUBLISHED = ("text", "model", "modelSha256", "runtime", "cpu", "promptSha256")
+PUBLISHED = ("text", "model", "modelSha256", "runtime", "cpu", "promptSha256", "maxTokens")
 
 
 def embed(index: dict[str, Any], rs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -239,6 +243,7 @@ def generate(
                 "modelSha256": model.sha256,
                 "runtime": f"{allow.runtime.name} {allow.runtime.version}",
                 "cpu": _cpu(),
+                "maxTokens": MAX_TOKENS,
                 "promptSha256": digest(message),
                 "seconds": seconds,
             }

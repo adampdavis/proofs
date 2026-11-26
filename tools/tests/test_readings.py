@@ -78,7 +78,7 @@ class DecodingTests(unittest.TestCase):
             "--top-k 1",
             "--seed 0",
             "--threads 4",
-            "-n 256",
+            "-n 512",
             "-f p.txt",
             "-m m.gguf",
         ):
@@ -105,9 +105,15 @@ class CacheTests(unittest.TestCase):
     """Each statement is read once per model; results carry everything needed to reproduce."""
 
     def test_missing_only_and_merge(self) -> None:
-        old = [{"hash": "a" * 12, "modelSha256": SHA, "text": "x"}]
+        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 512, "text": "x"}]
         self.assertEqual(readings.missing(["a" * 12, "b" * 12], old, SHA), ["b" * 12])
         self.assertEqual(readings.missing(["a" * 12], old, "c" * 64), ["a" * 12])
+
+    def test_changing_the_cap_regenerates(self) -> None:
+        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 256, "text": "cut"}]
+        self.assertEqual(readings.missing(["a" * 12], old, SHA), ["a" * 12])
+        legacy = [{"hash": "a" * 12, "modelSha256": SHA, "text": "no cap recorded"}]
+        self.assertEqual(readings.missing(["a" * 12], legacy, SHA), ["a" * 12])
         merged = readings.merge(old, [{"hash": "b" * 12, "modelSha256": SHA, "text": "y"}])
         self.assertEqual([r["hash"] for r in merged], ["a" * 12, "b" * 12])
 
