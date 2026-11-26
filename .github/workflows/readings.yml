@@ -8,8 +8,6 @@ on:
         description: "Model name from models.toml"
         required: true
         default: "Qwen2.5-Coder-7B-Instruct-Q4_K_M"
-  push:
-    branches: [infra/model-readings]
 permissions:
   contents: read
 jobs:
@@ -19,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.model)) || fromJSON('["Qwen2.5-Coder-1.5B-Instruct-Q4_K_M","Qwen2.5-Coder-7B-Instruct-Q4_K_M"]') }}
+        model: ${{ fromJSON(format('["{0}"]', inputs.model)) }}
     steps:
       - uses: actions/checkout@v4
         with:

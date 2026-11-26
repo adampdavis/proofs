@@ -31,7 +31,7 @@ PROMPT = "Translate the following Lean statement into natural language:\n```\n{l
 TEMPLATES = ("chatml",)
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
-MAX_TOKENS = 512
+MAX_TOKENS = 256
 _SHA = re.compile(r"[0-9a-f]{64}")
 
 
@@ -98,8 +98,51 @@ def load_models(path: Path) -> Allowlist:
 
 
 def user_message(root: Path, h: str) -> str:
-    lean = (root / arginf.ROOT_DIR / h / "Statement.lean").read_text(encoding="utf-8").strip()
+    """The fixed prompt around Statement.lean, keeping imports (they give names their meaning)
+    and dropping the namespace/end lines, which only carry our hash."""
+    text = (root / arginf.ROOT_DIR / h / "Statement.lean").read_text(encoding="utf-8")
+    lines = [ln for ln in text.splitlines() if not re.match(r"\s*(namespace|end)\b", ln)]
+    lean = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     return PROMPT.format(lean=lean)
+
+
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def missing(hashes: list[str], existing: list[dict[str, Any]], model_sha: str) -> list[str]:
+    done = {r["hash"] for r in existing if r.get("modelSha256") == model_sha}
+    return [h for h in hashes if h not in done]
+
+
+def merge(existing: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    key = {(r["hash"], r["modelSha256"]): r for r in existing}
+    for r in new:
+        key[(r["hash"], r["modelSha256"])] = r
+    return sorted(key.values(), key=lambda r: (r["hash"], r["modelSha256"]))
+
+
+PUBLISHED = ("text", "model", "modelSha256", "runtime", "cpu", "promptSha256")
+
+
+def embed(index: dict[str, Any], rs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Attach each statement's readings to the published index (reproduction details only)."""
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    for r in rs:
+        by_hash.setdefault(r["hash"], []).append({k: r[k] for k in PUBLISHED if k in r})
+    for t in index["theorems"]:
+        t["readings"] = by_hash.get(t["hash"], [])
+    return index
+
+
+def _cpu() -> str:
+    try:
+        for ln in Path("/proc/cpuinfo").read_text().splitlines():
+            if ln.startswith("model name"):
+                return ln.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return "unknown"
 
 
 def chat_prompt(template: str, user: str) -> str:
@@ -177,7 +220,8 @@ def generate(
     out: list[dict[str, Any]] = []
     for h in hashes:
         prompt_file = cache / f"prompt-{h}.txt"
-        prompt_file.write_text(chat_prompt(model.template, user_message(root, h)), encoding="utf-8")
+        message = user_message(root, h)
+        prompt_file.write_text(chat_prompt(model.template, message), encoding="utf-8")
         start = time.monotonic()
         run = subprocess.run(
             generation_args(binary, weights, prompt_file),
@@ -194,6 +238,8 @@ def generate(
                 "model": model.name,
                 "modelSha256": model.sha256,
                 "runtime": f"{allow.runtime.name} {allow.runtime.version}",
+                "cpu": _cpu(),
+                "promptSha256": digest(message),
                 "seconds": seconds,
             }
         )
@@ -207,22 +253,36 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--model", required=True)
     g.add_argument("--cache", type=Path, default=Path(".cache/readings"))
     g.add_argument("--out", type=Path, default=Path("readings.json"))
+    g.add_argument("--existing", type=Path, default=None, help="readings.json to extend")
     g.add_argument("hashes", nargs="*")
+    e = sub.add_parser("embed", help="attach readings.json to index.json in place")
+    e.add_argument("index", type=Path)
+    e.add_argument("readings", type=Path)
     args = parser.parse_args(argv)
     root = Path.cwd()
+    if args.cmd == "embed":
+        idx = json.loads(args.index.read_text(encoding="utf-8"))
+        rs = (
+            json.loads(args.readings.read_text(encoding="utf-8")) if args.readings.is_file() else []
+        )
+        args.index.write_text(json.dumps(embed(idx, rs), ensure_ascii=False, indent=1) + "\n")
+        return 0
     try:
         allow = load_models(root / "models.toml")
         model = allow.model(args.model)
         hashes = args.hashes or sorted(
             p.name for p in (root / arginf.ROOT_DIR).iterdir() if arginf.HASH_RE.match(p.name)
         )
-        result = generate(root, allow, model, hashes, args.cache)
-    except (ReadingError, OSError) as err:
+        existing: list[dict[str, Any]] = []
+        if args.existing and args.existing.is_file():
+            existing = json.loads(args.existing.read_text(encoding="utf-8"))
+        todo = missing(hashes, existing, model.sha256)
+        result = merge(existing, generate(root, allow, model, todo, args.cache) if todo else [])
+    except (ReadingError, OSError, ValueError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    for r in result:
-        print(f"{r['hash']} ({r['seconds']}s): {r['text'][:200]}")
+    print(f"{len(todo)} new reading(s), {len(result)} total")
     return 0
 
 

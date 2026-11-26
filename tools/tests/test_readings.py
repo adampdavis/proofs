@@ -78,7 +78,7 @@ class DecodingTests(unittest.TestCase):
             "--top-k 1",
             "--seed 0",
             "--threads 4",
-            "-n 512",
+            "-n 256",
             "-f p.txt",
             "-m m.gguf",
         ):
@@ -99,3 +99,49 @@ class DecodingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CacheTests(unittest.TestCase):
+    """Each statement is read once per model; results carry everything needed to reproduce."""
+
+    def test_missing_only_and_merge(self) -> None:
+        old = [{"hash": "a" * 12, "modelSha256": SHA, "text": "x"}]
+        self.assertEqual(readings.missing(["a" * 12, "b" * 12], old, SHA), ["b" * 12])
+        self.assertEqual(readings.missing(["a" * 12], old, "c" * 64), ["a" * 12])
+        merged = readings.merge(old, [{"hash": "b" * 12, "modelSha256": SHA, "text": "y"}])
+        self.assertEqual([r["hash"] for r in merged], ["a" * 12, "b" * 12])
+
+    def test_prompt_digest_changes_with_statement(self) -> None:
+        self.assertNotEqual(readings.digest("p1"), readings.digest("p2"))
+
+
+class EmbedTests(unittest.TestCase):
+    def test_embed_attaches_readings_by_hash_without_timing(self) -> None:
+        index = {"version": 2, "theorems": [{"hash": "a" * 12}, {"hash": "b" * 12}]}
+        rs = [
+            {
+                "hash": "a" * 12,
+                "text": "t",
+                "model": "M",
+                "modelSha256": SHA,
+                "runtime": "r",
+                "cpu": "c",
+                "promptSha256": "p" * 64,
+                "seconds": 3.0,
+            }
+        ]
+        out = readings.embed(index, rs)
+        self.assertEqual(
+            out["theorems"][0]["readings"],
+            [
+                {
+                    "text": "t",
+                    "model": "M",
+                    "modelSha256": SHA,
+                    "runtime": "r",
+                    "cpu": "c",
+                    "promptSha256": "p" * 64,
+                }
+            ],
+        )
+        self.assertEqual(out["theorems"][1]["readings"], [])
