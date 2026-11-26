@@ -28,12 +28,13 @@ from typing import Any
 from tools import arginf
 
 PROMPT = (
-    "Translate the following Lean statement into natural language. Reply with only the "
-    "translation of what the statement says: no preamble, and do not describe the imports, "
-    "the definition or the Lean syntax. Use LaTeX math notation between $ signs where it "
-    "helps.\n```\n{lean}\n```"
+    "Translate the following Lean statement into the language of a mathematics research paper. "
+    "Reply with only the translation of what the statement says: no preamble, and do not "
+    "describe the imports, the definition or the Lean syntax. Write it the way theorem "
+    "statements appear in papers, as prose with inline notation in LaTeX between $ signs, "
+    "for example: For every $x \\in \\mathbb{R}$, we have $x^2 \\ge 0$.\n```\n{lean}\n```"
 )
-TEMPLATES = ("chatml",)
+TEMPLATES = ("chatml", "qwen3-nothink")
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
 MAX_TOKENS = 512
@@ -109,7 +110,7 @@ def user_message(root: Path, h: str) -> str:
     text = (root / arginf.ROOT_DIR / h / "Statement.lean").read_text(encoding="utf-8")
     lines = [ln for ln in text.splitlines() if not re.match(r"\s*(namespace|end)\b", ln)]
     lean = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-    return PROMPT.format(lean=lean)
+    return PROMPT.replace("{lean}", lean)  # not str.format: the example contains TeX braces
 
 
 def digest(text: str) -> str:
@@ -164,9 +165,12 @@ def _cpu() -> str:
 
 def chat_prompt(template: str, user: str) -> str:
     """The raw model input: one user turn, no system message, then the assistant turn."""
-    if template != "chatml":
-        raise ReadingError(f"unknown template {template}")
-    return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if template == "chatml":
+        return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if template == "qwen3-nothink":
+        # Qwen3's documented non-thinking turn: an empty think block opens the reply.
+        return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    raise ReadingError(f"unknown template {template}")
 
 
 def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
@@ -199,6 +203,7 @@ def is_truncated(stderr: str) -> bool:
 
 
 def clean_output(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     for marker in ("<|im_end|>", "[end of text]", "> EOF by user"):
         text = text.split(marker, 1)[0]
     return text.strip()
