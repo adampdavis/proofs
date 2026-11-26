@@ -1,0 +1,7 @@
+# Changes to CI, tooling and the Lean project need a maintainer review.
+/.github/ @adampdavis
+/tools/ @adampdavis
+/lakefile.toml @adampdavis
+/lake-manifest.json @adampdavis
+/lean-toolchain @adampdavis
+/LICENSE @adampdavis
