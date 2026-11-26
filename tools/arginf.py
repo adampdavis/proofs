@@ -30,7 +30,7 @@ HASH_LEN = 12
 HASH_RE = re.compile(rf"^[0-9a-f]{{{HASH_LEN}}}$")
 # Theorem folders hold Lean only: no prose, no comments, no string literals. The statement is
 # the statement. Curation (featured, examples) lives in CURATION_FILE, owned by maintainers.
-ALLOWED_FILES = frozenset({"Statement.lean", "Proof.lean"})
+ALLOWED_FILES = frozenset({"Statement.lean"})
 ATTEMPT_DIR = "attempts"
 ATTEMPT_FILES = frozenset({"Attempt.lean", "attempt.toml"})
 CURATION_FILE = "curation.toml"
@@ -40,9 +40,9 @@ _COMMAND_RE = re.compile(
     r"(?m)^(?:end|theorem|lemma|def|abbrev|namespace|section|open|variable|instance|"
     r"example|structure|class|inductive|noncomputable|private|protected|@\[|#|import|set_option)\b"
 )
-_IMPORT_RE = re.compile(r"(?m)^import\s+Theorems\.«([0-9a-f]+)»\.(?:Proof|Statement)\s*$")
-_ATTEMPT_IMPORT_RE = re.compile(
-    r"(?m)^import\s+Theorems\.«([0-9a-f]+)»\.attempts\.«([0-9a-f]+)»\.Attempt\s*$"
+# Building on another statement: import its Statement, or one of its proofs (an attempt).
+_IMPORT_RE = re.compile(
+    r"(?m)^import\s+Theorems\.«([0-9a-f]+)»\.(?:Statement|attempts\.«[0-9a-f]+»\.Attempt)\s*$"
 )
 
 
@@ -353,29 +353,11 @@ def attempt_info(folder: Path) -> dict[str, Any]:
         "parent": parent,
         "openGoals": goals,
         "complete": goals == 0,
+        # Proof length: non-whitespace characters of the code, so formatting doesn't count.
+        "size": len("".join(_attempt_body(code).split())),
         "children": [],
         "lean": (folder / "Attempt.lean").read_text(encoding="utf-8"),
     }
-
-
-def promote(root: Path, h: str, a: str) -> None:
-    """Make a complete attempt the theorem's Proof.lean."""
-    folder = root / ROOT_DIR / h / ATTEMPT_DIR / a
-    errors = check_attempt(folder)
-    if errors:
-        raise ToolError("; ".join(errors))
-    if not attempt_info(folder)["complete"]:
-        raise ToolError(f"attempt {a} still has open goals (sorry)")
-    proof = root / ROOT_DIR / h / "Proof.lean"
-    if proof.exists():
-        raise ToolError(f"{proof} already exists: this theorem is already proved")
-    proof.write_text(
-        f"import {ROOT_DIR}.«{h}».{ATTEMPT_DIR}.«{a}».Attempt\n\n"
-        f"namespace {ROOT_DIR}.«{h}»\n\n"
-        f"theorem proof : statement := Attempt_{a}.proof\n\n"
-        f"end {ROOT_DIR}.«{h}»\n",
-        encoding="utf-8",
-    )
 
 
 # Axiom audit (CI runs this after `lake build`) ---------------------------------
@@ -384,17 +366,22 @@ ALLOWED_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 _AXIOMS_RE = re.compile(r"depends on axioms: \[(.*?)\]", re.S)
 
 
-def audit_source(h: str, attempt: str | None = None) -> str:
-    """A Lean file that fails unless the proof proves exactly `statement`, then lists axioms."""
+def audit_source(h: str, attempt: str) -> str:
+    """A Lean file that fails unless the attempt proves exactly `statement`, then lists axioms."""
     ns = f"{ROOT_DIR}.«{h}»"
-    if attempt:
-        module, proof = (
-            f"{ns}.{ATTEMPT_DIR}.«{attempt}».Attempt",
-            f"{_attempt_ns(h, attempt)}.proof",
-        )
-    else:
-        module, proof = f"{ns}.Proof", f"{ns}.proof"
+    module, proof = f"{ns}.{ATTEMPT_DIR}.«{attempt}».Attempt", f"{_attempt_ns(h, attempt)}.proof"
     return f"import {module}\nexample : {ns}.statement := {proof}\n#print axioms {proof}\n"
+
+
+def complete_attempts(root: Path, h: str) -> list[str]:
+    adir = root / ROOT_DIR / h / ATTEMPT_DIR
+    if not adir.is_dir():
+        return []
+    return [
+        a.name
+        for a in sorted(adir.iterdir())
+        if HASH_RE.match(a.name) and (a / "Attempt.lean").is_file() and attempt_info(a)["complete"]
+    ]
 
 
 def parse_axioms(output: str) -> list[str]:
@@ -410,10 +397,10 @@ def forbidden_axioms(axioms: list[str]) -> list[str]:
     return [a for a in axioms if a not in ALLOWED_AXIOMS]
 
 
-def audit(root: Path, h: str, attempt: str | None = None) -> list[str]:
-    if not HASH_RE.match(h) or (attempt is not None and not HASH_RE.match(attempt)):
+def audit(root: Path, h: str, attempt: str) -> list[str]:
+    if not HASH_RE.match(h) or not HASH_RE.match(attempt):
         return [f"bad hash {h!r}/{attempt!r}"]
-    src = root / ".lake" / f"Audit_{h}_{attempt or 'proof'}.lean"
+    src = root / ".lake" / f"Audit_{h}_{attempt}.lean"
     src.parent.mkdir(exist_ok=True)
     src.write_text(audit_source(h, attempt), encoding="utf-8")
     run = subprocess.run(
@@ -440,8 +427,6 @@ def _module_file(root: Path, module: str) -> Path:
 def fast_plan(root: Path, h: str) -> list[tuple[str, Path]] | None:
     """Modules to compile, dependencies first, or None if anything needs Mathlib/CSLib."""
     targets = [f"{ROOT_DIR}.«{h}».Statement"]
-    if (root / ROOT_DIR / h / "Proof.lean").is_file():
-        targets.append(f"{ROOT_DIR}.«{h}».Proof")
     adir = root / ROOT_DIR / h / ATTEMPT_DIR
     if adir.is_dir():
         targets += [
@@ -500,12 +485,11 @@ def fast_check(root: Path, h: str, attempt: str | None = None) -> list[str] | No
         )
         if run.returncode != 0:
             return [f"{module}: {(run.stdout + run.stderr).strip()[:2000]}"]
-    targets: list[str | None] = [attempt] if attempt else []
-    if (root / ROOT_DIR / h / "Proof.lean").is_file():
-        targets.append(None)
+    # Every complete attempt in the folder is a proof, so all of them are audited.
+    targets = sorted(set(complete_attempts(root, h)) | ({attempt} if attempt else set()))
     errors: list[str] = []
     for a in targets:
-        src = out / f"Audit_{h}_{a or 'proof'}.lean"
+        src = out / f"Audit_{h}_{a}.lean"
         src.write_text(audit_source(h, a), encoding="utf-8")
         run = subprocess.run(
             ["lean", str(src)], cwd=root, env=env, capture_output=True, text=True, timeout=600
@@ -545,28 +529,22 @@ def build_index(root: Path) -> dict[str, Any]:
     for folder in sorted(p for p in base.iterdir() if p.is_dir() and HASH_RE.match(p.name)):
         errors = check_folder(folder)
         stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
-        proof = folder / "Proof.lean"
-        proof_text = proof.read_text(encoding="utf-8") if proof.is_file() else ""
-        used = [aa for ah, aa in _ATTEMPT_IMPORT_RE.findall(proof_text) if ah == folder.name]
-        dep_text = stmt_text + "\n" + proof_text
-        for aa in used:
-            att = folder / ATTEMPT_DIR / aa / "Attempt.lean"
-            if att.is_file():
-                dep_text += "\n" + att.read_text(encoding="utf-8")
+        tree = _attempt_tree(folder)
+        proofs = [a["hash"] for a in tree if a["complete"]]
+        dep_text = stmt_text + "".join("\n" + a["lean"] for a in tree if a["complete"])
         deps = sorted({d for d in _IMPORT_RE.findall(dep_text) if d != folder.name})
         entries[folder.name] = {
             "hash": folder.name,
             "statement": extract_statement(stmt_text),
             "statementLean": stmt_text,
-            "proofLean": proof_text or None,
-            "proofAttempt": used[0] if used else None,
-            "status": "proved" if proof.is_file() else "open",
+            "status": "proved" if proofs else "open",
+            "proofs": proofs,
             "dependencies": deps,
             "dependents": [],
             "valid": not errors,
             "featured": folder.name in curation["featured"],
             "example": folder.name in curation["examples"],
-            "attempts": _attempt_tree(folder),
+            "attempts": tree,
         }
     for h, e in entries.items():
         for d in e["dependencies"]:
@@ -601,15 +579,11 @@ def main(argv: list[str] | None = None) -> int:
     p_att.add_argument("--from", dest="parent", default=None, help="attempt hash to continue")
     p_seal = sub.add_parser("seal", help="re-hash an edited attempt folder")
     p_seal.add_argument("folder", type=Path)
-    p_prom = sub.add_parser("promote", help="make a complete attempt the theorem's proof")
-    p_prom.add_argument("theorem")
-    p_prom.add_argument("attempt")
     p_fast = sub.add_parser("fast", help="compile + audit a core-only folder without Mathlib")
     p_fast.add_argument("theorem")
     p_fast.add_argument("--attempt", default=None)
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
-    p_audit.add_argument("hashes", nargs="*", help="default: every folder with a Proof.lean")
-    p_audit.add_argument("--attempt", default=None, help="audit this complete attempt instead")
+    p_audit.add_argument("hashes", nargs="*", help="statements to audit (default: all)")
     args = parser.parse_args(argv)
     root = Path.cwd()
     try:
@@ -650,9 +624,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.cmd == "seal":
             print(seal_attempt(args.folder))
-        elif args.cmd == "promote":
-            promote(root, args.theorem, args.attempt)
-            print(f"wrote {ROOT_DIR}/{args.theorem}/Proof.lean")
         elif args.cmd == "fast":
             result = fast_check(root, args.theorem, args.attempt)
             if result is None:
@@ -665,14 +636,15 @@ def main(argv: list[str] | None = None) -> int:
             print("ok: compiled and audited with Lean core only")
         elif args.cmd == "audit":
             hashes = args.hashes or sorted(
-                p.parent.name for p in (root / ROOT_DIR).glob("*/Proof.lean")
+                p.name for p in (root / ROOT_DIR).iterdir() if HASH_RE.match(p.name)
             )
-            errors = [e for h in hashes for e in audit(root, h, args.attempt)]
+            pairs = [(h, a) for h in hashes for a in complete_attempts(root, h)]
+            errors = [e for h, a in pairs for e in audit(root, h, a)]
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)
             if errors:
                 return 1
-            print(f"ok: {len(hashes)} proof(s) use only {sorted(ALLOWED_AXIOMS)}")
+            print(f"ok: {len(pairs)} proof(s) use only {sorted(ALLOWED_AXIOMS)}")
         elif args.cmd == "index":
             json.dump(build_index(root), sys.stdout, ensure_ascii=False, indent=1)
             print()
