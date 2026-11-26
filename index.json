@@ -1,0 +1,70 @@
+{
+ "version": 1,
+ "theorems": [
+  {
+   "hash": "23a9ca539bfc",
+   "title": "One-way functions imply $\\mathsf{SAT} \\notin \\mathsf{P}$",
+   "kind": "theorem",
+   "description": "Known result, proved in cslib-frontier as `Cslib.Crypto.OneWay.SAT_notMem_P` (via Cook–Levin). Cited here so other results can build on it by hash.",
+   "tags": [],
+   "statement": "∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF",
+   "statementLean": "import CslibFrontier.Crypto.Computational.OneWay.NP\n\nnamespace Theorems.«23a9ca539bfc»\n\ndef statement : Prop :=\n  ∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF\n\nend Theorems.«23a9ca539bfc»\n",
+   "proofLean": "import Theorems.«23a9ca539bfc».attempts.«5d90c2692c3e».Attempt\n\nnamespace Theorems.«23a9ca539bfc»\n\ntheorem proof : statement := Attempt_5d90c2692c3e.proof\n\nend Theorems.«23a9ca539bfc»\n\nimport Theorems.«23a9ca539bfc».Statement\n\nnamespace Theorems.«23a9ca539bfc».Attempt_5d90c2692c3e\n\ntheorem proof : Theorems.«23a9ca539bfc».statement :=\n  fun _ hf => hf.SAT_notMem_P\n\nend Theorems.«23a9ca539bfc».Attempt_5d90c2692c3e\n",
+   "status": "proved",
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "attempts": [
+    {
+     "hash": "5d90c2692c3e",
+     "parent": null,
+     "note": "Cite the cslib-frontier proof",
+     "openGoals": 0,
+     "complete": true,
+     "children": []
+    }
+   ]
+  },
+  {
+   "hash": "c72a0c096b0a",
+   "title": "One-way functions imply pseudorandom generators",
+   "kind": "theorem",
+   "description": "The Håstad–Impagliazzo–Levin–Luby theorem, proved in cslib-frontier as `Cslib.Crypto.OneWay.exists_pseudorandomGenerator`. Cited here so other results can build on it by hash.",
+   "tags": [],
+   "statement": "∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → ∃ g : List Bool → List Bool, Cslib.Crypto.PseudorandomGenerator g (fun n => n + 1)",
+   "statementLean": "import CslibFrontier.Crypto.Computational.OneWayToPRG\n\nnamespace Theorems.«c72a0c096b0a»\n\ndef statement : Prop :=\n  ∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → ∃ g : List Bool → List Bool, Cslib.Crypto.PseudorandomGenerator g (fun n => n + 1)\n\nend Theorems.«c72a0c096b0a»\n",
+   "proofLean": "import Theorems.«c72a0c096b0a».attempts.«bda14aeb9f48».Attempt\n\nnamespace Theorems.«c72a0c096b0a»\n\ntheorem proof : statement := Attempt_bda14aeb9f48.proof\n\nend Theorems.«c72a0c096b0a»\n\nimport Theorems.«c72a0c096b0a».Statement\n\nnamespace Theorems.«c72a0c096b0a».Attempt_bda14aeb9f48\n\ntheorem proof : Theorems.«c72a0c096b0a».statement :=\n  fun _ hf => hf.exists_pseudorandomGenerator\n\nend Theorems.«c72a0c096b0a».Attempt_bda14aeb9f48\n",
+   "status": "proved",
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "attempts": [
+    {
+     "hash": "bda14aeb9f48",
+     "parent": null,
+     "note": "Cite the cslib-frontier proof",
+     "openGoals": 0,
+     "complete": true,
+     "children": []
+    }
+   ]
+  },
+  {
+   "hash": "ccea3a5ebd7d",
+   "title": "Does $\\mathsf{P} \\neq \\mathsf{NP}$ imply one-way functions?",
+   "kind": "open-question",
+   "description": "The converse of the known direction (one-way functions imply $\\mathsf{SAT} \\notin \\mathsf{P}$). Stated with $\\mathsf{P} \\neq \\mathsf{NP}$ as $\\mathsf{SAT} \\notin \\mathsf{P}$, using the cslib-frontier definitions. Basing one-way functions on worst-case NP-hardness is a central open problem with known barriers.",
+   "tags": [
+    "featured"
+   ],
+   "statement": "Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF → ∃ f : List Bool → List Bool, Cslib.Crypto.OneWay f",
+   "statementLean": "import CslibFrontier.Crypto.Computational.OneWay.NP\n\nnamespace Theorems.«ccea3a5ebd7d»\n\ndef statement : Prop :=\n  Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF → ∃ f : List Bool → List Bool, Cslib.Crypto.OneWay f\n\nend Theorems.«ccea3a5ebd7d»\n",
+   "proofLean": null,
+   "status": "open",
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "attempts": []
+  }
+ ]
+}
