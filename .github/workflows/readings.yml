@@ -1,0 +1,44 @@
+# Generate English readings with an allowlisted open-weights model (models.toml) on CPU.
+# Deterministic: fixed prompt, no system message, temperature 0, top-k 1, seed 0, 4 threads.
+name: readings
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model name from models.toml"
+        required: true
+        default: "Qwen2.5-Coder-7B-Instruct-Q4_K_M"
+  push:
+    branches: [infra/model-readings]
+permissions:
+  contents: read
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.model)) || fromJSON('["Qwen2.5-Coder-1.5B-Instruct-Q4_K_M","Qwen2.5-Coder-7B-Instruct-Q4_K_M"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore model cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/readings
+          key: readings-${{ matrix.model }}-${{ hashFiles('models.toml') }}
+      - name: Generate
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          nproc; free -g | head -2
+          time python3 tools/readings.py generate --model "$MODEL" --out readings.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readings-${{ matrix.model }}
+          path: readings.json
