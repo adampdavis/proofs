@@ -124,7 +124,7 @@ def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
 
 
 def clean_output(text: str) -> str:
-    for marker in ("<|im_end|>", "[end of text]"):
+    for marker in ("<|im_end|>", "[end of text]", "> EOF by user"):
         text = text.split(marker, 1)[0]
     return text.strip()
 

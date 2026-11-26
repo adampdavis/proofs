@@ -87,6 +87,7 @@ class DecodingTests(unittest.TestCase):
     def test_clean_output_strips_chat_tokens(self) -> None:
         self.assertEqual(readings.clean_output("  Every n.<|im_end|>\n"), "Every n.")
         self.assertEqual(readings.clean_output("Every n. [end of text]\n"), "Every n.")
+        self.assertEqual(readings.clean_output("Every n.\n\n> EOF by user\n"), "Every n.")
 
     def test_sha256_check(self) -> None:
         f = Path(tempfile.mkdtemp()) / "blob"
