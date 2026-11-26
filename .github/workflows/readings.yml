@@ -7,7 +7,7 @@ on:
       model:
         description: "Model name from models.toml"
         required: true
-        default: "Qwen2.5-Coder-7B-Instruct-Q4_K_M"
+        default: "Qwen3-8B-Q4_K_M"
 permissions:
   contents: read
 jobs:

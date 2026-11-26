@@ -169,9 +169,7 @@ def chat_prompt(template: str, user: str) -> str:
         return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
     if template == "qwen3-nothink":
         # Qwen3's documented non-thinking turn: an empty think block opens the reply.
-        return (
-            f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-        )
+        return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
     raise ReadingError(f"unknown template {template}")
 
 

@@ -64,10 +64,11 @@ class PromptTests(unittest.TestCase):
         h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
         self.assertEqual(
             readings.user_message(root, h),
-            "Translate the following Lean statement into natural language. Reply with only the "
-            "translation of what the statement says: no preamble, and do not describe the "
-            "imports, the definition or the Lean syntax. Use LaTeX math notation between $ "
-            "signs where it helps.\n```\n"
+            "Translate the following Lean statement into the language of a mathematics research "
+            "paper. Reply with only the translation of what the statement says: no preamble, and "
+            "do not describe the imports, the definition or the Lean syntax. Write it the way "
+            "theorem statements appear in papers, as prose with inline notation in LaTeX between "
+            "$ signs, for example: For every $x \\in \\mathbb{R}$, we have $x^2 \\ge 0$.\n```\n"
             "import Init\n\ndef statement : Prop :=\n  ∀ n : Nat, n + 0 = n\n```",
         )
         self.assertNotIn(h, readings.user_message(root, h))
@@ -190,3 +191,10 @@ class PromptBracesTests(unittest.TestCase):
         msg = readings.user_message(root, h)
         self.assertIn("\\mathbb{R}", msg)
         self.assertTrue(msg.endswith("def statement : Prop :=\n  True\n```"))
+
+
+class ThinkTests(unittest.TestCase):
+    def test_empty_think_block_is_stripped(self) -> None:
+        self.assertEqual(
+            readings.clean_output("<think>\n\n</think>\n\nFor every $n$."), "For every $n$."
+        )
