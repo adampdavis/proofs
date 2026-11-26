@@ -27,7 +27,11 @@ from typing import Any
 
 from tools import arginf
 
-PROMPT = "Translate the following Lean statement into natural language:\n```\n{lean}\n```"
+PROMPT = (
+    "Translate the following Lean statement into natural language. Reply with only the "
+    "translation of what the statement says: no preamble, and do not describe the imports, "
+    "the definition or the Lean syntax.\n```\n{lean}\n```"
+)
 TEMPLATES = ("chatml",)
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
 THREADS = 4
@@ -111,11 +115,16 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def missing(hashes: list[str], existing: list[dict[str, Any]], model_sha: str) -> list[str]:
+def missing(
+    hashes: list[str], existing: list[dict[str, Any]], model_sha: str, prompts: dict[str, str]
+) -> list[str]:
+    """Statements needing a (re)reading: new, or read with another model, cap or prompt."""
     done = {
         r["hash"]
         for r in existing
-        if r.get("modelSha256") == model_sha and r.get("maxTokens") == MAX_TOKENS
+        if r.get("modelSha256") == model_sha
+        and r.get("maxTokens") == MAX_TOKENS
+        and r.get("promptSha256") == prompts.get(r["hash"])
     }
     return [h for h in hashes if h not in done]
 
@@ -300,7 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         existing: list[dict[str, Any]] = []
         if args.existing and args.existing.is_file():
             existing = json.loads(args.existing.read_text(encoding="utf-8"))
-        todo = missing(hashes, existing, model.sha256)
+        prompts = {h: digest(user_message(root, h)) for h in hashes}
+        todo = missing(hashes, existing, model.sha256, prompts)
         result = merge(existing, generate(root, allow, model, todo, args.cache) if todo else [])
     except (ReadingError, OSError, ValueError) as err:
         print(f"error: {err}", file=sys.stderr)

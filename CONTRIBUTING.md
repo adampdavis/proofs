@@ -41,7 +41,7 @@ python3 tools/arginf.py promote "$H" "$A"        # writes Theorems/$H/Proof.lean
 Statements that only import Lean core (`Init`, `Std`, `Lean`) are checked in seconds. Statements that import Mathlib or cslib-frontier use a prebuilt cache.
 
 ## English readings
-Don't write them. CI generates one per statement after it merges (see `models.toml` and `tools/readings.py`). The prompt is fixed: `Translate the following Lean statement into natural language:`, followed by your `Statement.lean`'s imports and `def statement : Prop := …` in a code block. To see what the model will be asked:
+Don't write them. CI generates one per statement after it merges (see `models.toml` and `tools/readings.py`). The prompt is fixed: `Translate the following Lean statement into natural language. Reply with only the translation of what the statement says: no preamble, and do not describe the imports, the definition or the Lean syntax.`, followed by your `Statement.lean`'s imports and `def statement : Prop := …` in a code block. To see what the model will be asked:
 ```bash
 python3 -c "from tools import readings; from pathlib import Path; print(readings.user_message(Path('.'), '$H'))"
 ```

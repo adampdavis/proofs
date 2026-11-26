@@ -58,15 +58,18 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(p, "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n")
         self.assertNotIn("system", p)
 
-    def test_user_message_is_the_fixed_translation_prompt(self) -> None:
+    def test_user_message_is_the_fixed_prompt_with_imports_and_statement(self) -> None:
         root = Path(tempfile.mkdtemp())
         (root / "Theorems").mkdir()
         h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
-        msg = readings.user_message(root, h)
-        self.assertTrue(
-            msg.startswith("Translate the following Lean statement into natural language:\n```\n")
+        self.assertEqual(
+            readings.user_message(root, h),
+            "Translate the following Lean statement into natural language. Reply with only the "
+            "translation of what the statement says: no preamble, and do not describe the "
+            "imports, the definition or the Lean syntax.\n```\n"
+            "import Init\n\ndef statement : Prop :=\n  ∀ n : Nat, n + 0 = n\n```",
         )
-        self.assertIn("∀ n : Nat, n + 0 = n", msg)
+        self.assertNotIn(h, readings.user_message(root, h))
 
 
 class DecodingTests(unittest.TestCase):
@@ -104,16 +107,22 @@ if __name__ == "__main__":
 class CacheTests(unittest.TestCase):
     """Each statement is read once per model; results carry everything needed to reproduce."""
 
+    P = {"a" * 12: "p" * 64, "b" * 12: "q" * 64}
+
     def test_missing_only_and_merge(self) -> None:
-        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 512, "text": "x"}]
-        self.assertEqual(readings.missing(["a" * 12, "b" * 12], old, SHA), ["b" * 12])
-        self.assertEqual(readings.missing(["a" * 12], old, "c" * 64), ["a" * 12])
+        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 512, "promptSha256": "p" * 64}]
+        self.assertEqual(readings.missing(["a" * 12, "b" * 12], old, SHA, self.P), ["b" * 12])
+        self.assertEqual(readings.missing(["a" * 12], old, "c" * 64, self.P), ["a" * 12])
+
+    def test_changing_the_prompt_regenerates(self) -> None:
+        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 512, "promptSha256": "z" * 64}]
+        self.assertEqual(readings.missing(["a" * 12], old, SHA, self.P), ["a" * 12])
 
     def test_changing_the_cap_regenerates(self) -> None:
-        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 256, "text": "cut"}]
-        self.assertEqual(readings.missing(["a" * 12], old, SHA), ["a" * 12])
-        legacy = [{"hash": "a" * 12, "modelSha256": SHA, "text": "no cap recorded"}]
-        self.assertEqual(readings.missing(["a" * 12], legacy, SHA), ["a" * 12])
+        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 256, "promptSha256": "p" * 64}]
+        self.assertEqual(readings.missing(["a" * 12], old, SHA, self.P), ["a" * 12])
+        legacy = [{"hash": "a" * 12, "modelSha256": SHA, "promptSha256": "p" * 64}]
+        self.assertEqual(readings.missing(["a" * 12], legacy, SHA, self.P), ["a" * 12])
         merged = readings.merge(old, [{"hash": "b" * 12, "modelSha256": SHA, "text": "y"}])
         self.assertEqual([r["hash"] for r in merged], ["a" * 12, "b" * 12])
 
