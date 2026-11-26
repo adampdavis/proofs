@@ -1,6 +1,6 @@
 # Contributing
 
-By opening a pull request, you agree that your contribution is licensed under the [Apache License 2.0](LICENSE).
+By opening a pull request, you agree that your contribution is licensed under the [Apache License 2.0](LICENSE), and to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Everything happens through GitHub. There are no site accounts. You need `git`, `gh` (logged in) and Python 3.11+. To build locally, you also need [elan](https://github.com/leanprover/elan).
 
